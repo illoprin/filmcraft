@@ -1901,7 +1901,8 @@ impl FilmcraftApp {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
         panels::masks::pen_take_back(self, ctx, text_focused);
-        let fire = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, divider_focused));
+        let (fire, claimed) = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, divider_focused));
+        self.run_claimed_shortcuts(ctx, claimed);
         self.fire_shortcuts(ctx, fire);
     }
 
@@ -1919,7 +1920,8 @@ impl FilmcraftApp {
         if self.session.trim_play.dynamic.is_some() && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
-        let fire = self.match_shortcuts(&mut input, false, false);
+        let (fire, claimed) = self.match_shortcuts(&mut input, false, false);
+        self.run_claimed_shortcuts(ctx, claimed);
         self.fire_shortcuts(ctx, fire);
     }
 
@@ -1936,14 +1938,26 @@ impl FilmcraftApp {
             .unwrap_or_default()
     }
 
-    /// The binding ids the key presses in `i` fire, consuming those presses.
-    fn match_shortcuts(&mut self, i: &mut egui::InputState, text_focused: bool, divider_focused: bool) -> Vec<String> {
+    /// Run the Effect Controls shortcuts the key scan claimed, in the panel's own words.
+    fn run_claimed_shortcuts(&mut self, _ctx: &egui::Context, claimed: ClaimedShortcuts) {
+        if claimed.effect_controls_copy {
+            panels::effect_controls::copy_for_shortcut(self);
+        }
+        if claimed.effect_controls_paste {
+            panels::effect_controls::paste_for_shortcut(self);
+        }
+    }
+
+    /// The binding ids the key presses in `i` fire, consuming those presses, and the panel
+    /// shortcuts they claimed instead (see [`ClaimedShortcuts`]).
+    fn match_shortcuts(&mut self, i: &mut egui::InputState, text_focused: bool, divider_focused: bool) -> (Vec<String>, ClaimedShortcuts) {
         // Panel shortcuts of the focused panel override application shortcuts on the same chord.
         // egui ignores extra Shift and Alt when matching, so the most specific chords go first
         // across both scopes (the sort is stable, so the panel still wins a tie): otherwise the
         // Timeline's `Delete` (Clear) swallows the app-wide `Shift+Delete` (Ripple Delete) (#680).
         let focused = self.ui.focused.title();
         let mut fire = Vec::new();
+        let mut claimed = ClaimedShortcuts::default();
         let modifiers = i.modifiers;
         // With no text on the system clipboard, egui-winit drops the Ctrl+V press but still
         // passes its release: put the press back, so Paste can paste files or an image (#611).
@@ -1995,10 +2009,18 @@ impl FilmcraftApp {
                 continue;
             }
             if i.consume_key(*m, *k) {
-                fire.push(id.clone());
+                // Effect Controls takes Copy and Paste for its own selection — the selected
+                // keyframes, else the selected effect — instead of the app-wide clip commands.
+                if !text_focused && self.ui.focused == PanelKind::EffectControls && id == "edit.copy" {
+                    claimed.effect_controls_copy = true;
+                } else if !text_focused && self.ui.focused == PanelKind::EffectControls && id == "edit.paste" {
+                    claimed.effect_controls_paste = true;
+                } else {
+                    fire.push(id.clone());
+                }
             }
         }
-        fire
+        (fire, claimed)
     }
 
     /// Run the commands of the bindings `match_shortcuts` fired, as the focused panel scopes them.
@@ -3451,6 +3473,16 @@ mod audio_recovery_tests {
 /// with a modifier are not what a text field or an IME consumes, so they keep working.
 fn lets_text_field_keep(modifiers: egui::Modifiers, text_focused: bool) -> bool {
     text_focused && menus::specificity(modifiers) == 0
+}
+
+/// The panel shortcuts the key scan claimed while matching chords: Effect Controls runs them once
+/// the scan has released the input lock, because they edit the session and read the context.
+#[derive(Default)]
+struct ClaimedShortcuts {
+    /// Ctrl+C: copy the selected keyframes, else the selected effect.
+    effect_controls_copy: bool,
+    /// Ctrl+V: paste whatever the Effect Controls clipboard holds.
+    effect_controls_paste: bool,
 }
 
 #[cfg(test)]

@@ -244,6 +244,13 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     Err(e) => return err(format!("`keyframeSelection`: {e}")),
                 }
             }
+            if let Some(v) = p.get("effectSelection") {
+                match serde_json::from_value::<Vec<filmcraft_engine::EffectSel>>(v.clone()) {
+                    Ok(selection) if selection.len() <= 4096 => app.ui.selected_effects = selection,
+                    Ok(_) => return err("`effectSelection` may contain at most 4096 effects"),
+                    Err(e) => return err(format!("`effectSelection`: {e}")),
+                }
+            }
             if let Some(patch) = p.get("effectControls") {
                 let Some(patch) = patch.as_object() else { return err("`effectControls` must be an object") };
                 if let Some(v) = patch.get("timeZoom") {
