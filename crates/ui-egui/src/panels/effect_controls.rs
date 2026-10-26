@@ -71,6 +71,7 @@ fn constrained_time_zoom(zoom: Option<[f64; 2]>, duration: Tick, rate: filmcraft
     (start > 0.0 || end < 1.0).then_some([start, end])
 }
 
+/// The part of the clip the keyframe lane shows, in timeline ticks, for a zoom range.
 fn shown_range(start: Tick, duration: Tick, zoom: Option<[f64; 2]>) -> (Tick, Tick) {
     let (from, to) = time_zoom_range(zoom);
     let duration = duration.0.max(1);
@@ -371,6 +372,7 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
     out
 }
 
+/// The indices, in `effects`, of the effects selected in this panel.
 fn selected_effect_indices(app: &FilmcraftApp, clip: ClipId, effects: &[EffectInstance]) -> Vec<usize> {
     let mut indices: Vec<usize> =
         app.ui.selected_effects.iter().filter(|selection| selection.clip == clip).filter_map(|selection| selection.index(effects)).collect();
@@ -379,6 +381,8 @@ fn selected_effect_indices(app: &FilmcraftApp, clip: ClipId, effects: &[EffectIn
     indices
 }
 
+/// The indices to remove: the selection — or `clicked` alone when it is outside it — without
+/// intrinsic effects.
 fn removable_effect_indices(app: &FilmcraftApp, clip: ClipId, effects: &[EffectInstance], clicked: Option<usize>) -> Vec<usize> {
     let mut indices = selected_effect_indices(app, clip, effects);
     if let Some(clicked) = clicked
@@ -390,6 +394,8 @@ fn removable_effect_indices(app: &FilmcraftApp, clip: ClipId, effects: &[EffectI
     indices
 }
 
+/// The keyframe and path-vertex counts of an effect, saturating: the size a copy would add to the
+/// clipboard.
 fn effect_clipboard_size(effect: &EffectInstance) -> (usize, usize) {
     let mut keys = 0usize;
     let mut vertices = 0usize;
@@ -409,6 +415,8 @@ fn effect_clipboard_size(effect: &EffectInstance) -> (usize, usize) {
     (keys, vertices)
 }
 
+/// Copy the selected effects (or `clicked` alone) into the effect clipboard, refusing intrinsic,
+/// layer, essential or oversized chains.
 fn copy_effects(app: &mut FilmcraftApp, clip: ClipId, item: &TrackItem, clicked: usize) {
     let mut indices = selected_effect_indices(app, clip, &item.effects);
     if !indices.contains(&clicked) {
@@ -443,6 +451,8 @@ fn copy_effects(app: &mut FilmcraftApp, clip: ClipId, item: &TrackItem, clicked:
     app.ui.status = tlf!("Copied {count} effect(s)", count = indices.len());
 }
 
+/// Paste the effect clipboard onto the selected clips that accept it; audio and video chains do
+/// not mix.
 fn paste_effects(app: &mut FilmcraftApp, current_clip: ClipId) {
     let clipboard = app.ui.effect_clipboard.clone();
     if clipboard.effects.is_empty() {
@@ -485,6 +495,8 @@ fn paste_effects(app: &mut FilmcraftApp, current_clip: ClipId) {
     }
 }
 
+/// Copy the selected keyframes into the keyframe clipboard, with one effect template per instance,
+/// each keyframe offset from the playhead.
 fn copy_keyframes(app: &mut FilmcraftApp) -> Result<(), String> {
     let selected = app.ui.keyframe_selection.clone();
     if selected.is_empty() {
@@ -547,6 +559,7 @@ fn copy_keyframes(app: &mut FilmcraftApp) -> Result<(), String> {
     Ok(())
 }
 
+/// Paste the keyframe clipboard at the playhead and select what landed.
 fn paste_keyframes(app: &mut FilmcraftApp, current_clip: ClipId) {
     let clipboard = app.ui.effect_keyframe_clipboard.clone();
     if clipboard.entries.is_empty() {
@@ -567,6 +580,7 @@ fn paste_keyframes(app: &mut FilmcraftApp, current_clip: ClipId) {
     }
 }
 
+/// Ctrl+C in Effect Controls: the selected keyframes, else the selected effects.
 pub(crate) fn copy_for_shortcut(app: &mut FilmcraftApp) {
     if !app.ui.keyframe_selection.is_empty() {
         if let Err(error) = copy_keyframes(app) {
@@ -577,6 +591,7 @@ pub(crate) fn copy_for_shortcut(app: &mut FilmcraftApp) {
     copy_selected_effects(app);
 }
 
+/// Copy the panel's selection, or the effect it has selected or clicked.
 pub(crate) fn copy_selected_effects(app: &mut FilmcraftApp) {
     let Some((clip, item, _)) = selected_clip(app) else { return };
     let selected = selected_effect_indices(app, clip, &item.effects);
@@ -586,6 +601,7 @@ pub(crate) fn copy_selected_effects(app: &mut FilmcraftApp) {
     }
 }
 
+/// Whether Ctrl+V has something to paste onto the Timeline selection.
 pub(crate) fn can_paste_for_shortcut(app: &FilmcraftApp) -> bool {
     !app.session.state.selection.is_empty()
         && match app.ui.effect_controls_clipboard_kind {
@@ -595,6 +611,8 @@ pub(crate) fn can_paste_for_shortcut(app: &FilmcraftApp) -> bool {
         }
 }
 
+/// Del or Clear in Effect Controls: remove the selected keyframes, else the selected effects of
+/// every selected clip.
 pub(crate) fn delete_for_shortcut(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if !app.ui.keyframe_selection.is_empty() {
         run(app, ctx, vec![("effects.deleteKeyframes".into(), json!({"keyframes": app.ui.keyframe_selection}))]);
@@ -623,6 +641,7 @@ mod delete_shortcut_tests {
     use super::*;
 
     #[test]
+    /// An effect selected on a linked audio clip is removed from that clip, not from the video one.
     fn deleting_a_selected_audio_effect_uses_the_linked_audio_clip() {
         let mut session = filmcraft_engine::Session::default();
         session.execute("file.openDemoProject", json!({})).unwrap();
@@ -647,6 +666,7 @@ mod delete_shortcut_tests {
     }
 }
 
+/// Ctrl+V in Effect Controls: paste keyframes or effects, whichever the clipboard holds.
 pub(crate) fn paste_for_shortcut(app: &mut FilmcraftApp) {
     let Some((clip, _, _)) = selected_clip(app) else { return };
     match app.ui.effect_controls_clipboard_kind {
@@ -657,6 +677,8 @@ pub(crate) fn paste_for_shortcut(app: &mut FilmcraftApp) {
     }
 }
 
+/// Effect Controls for the selected clip — or for the selected transition. Draws the effect chain,
+/// its parameters and the keyframe lane.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
@@ -1237,6 +1259,8 @@ fn properties_nav(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// One parameter row: its control, its keyframe diamond and its graph, plus the commands they
+/// emit.
 pub(crate) fn param_row(
     app: &mut FilmcraftApp,
     ui: &mut egui::Ui,
@@ -2271,6 +2295,8 @@ mod lane_tests {
     }
 
     #[test]
+    /// Alt+wheel zoom consumes the whole smoothed wheel gesture, so the panel's shared scroll area
+    /// never scrolls while zooming.
     fn alt_wheel_zoom_does_not_scroll_the_effect_rows() {
         let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
         app.ui.effect_controls_time_zoom = Some([0.2, 0.8]);
@@ -2338,6 +2364,7 @@ mod lane_tests {
     }
 
     #[test]
+    /// The drag ghost is painted below and right of the pointer and names the effect being moved.
     fn effect_reorder_label_is_painted_below_and_right_of_the_pointer() {
         let ctx = context();
         let pointer = pos2(40.0, 30.0);
@@ -2473,6 +2500,7 @@ mod graph_drag_tests {
             Self::with("scale", ParamValue::Float(40.0), ParamValue::Float(80.0))
         }
 
+        /// A driver whose demo clip animates `param` from `from` to `to`.
         fn with(param: &'static str, from: ParamValue, to: ParamValue) -> Self {
             let mut session = filmcraft_engine::Session::default();
             session.execute("file.openDemoProject", json!({})).unwrap();
@@ -2500,6 +2528,7 @@ mod graph_drag_tests {
 
         // Draw the actual scalar graph and execute its emitted command, as the panel does.
         // Current paint shapes give a real held-frame position rather than previous telemetry.
+        /// Draw one frame with the given events and return the keyframe and influence positions painted.
         fn frame(&mut self, events: Vec<egui::Event>) -> [Pos2; 2] {
             self.time += 0.1;
             self.app.auto.begin_frame();

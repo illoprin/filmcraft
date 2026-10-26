@@ -1019,6 +1019,7 @@ fn yes() -> bool {
 }
 
 impl Default for UiState {
+    /// The UI state a fresh window starts with.
     fn default() -> Self {
         Self {
             language: crate::i18n::Language::default(),
