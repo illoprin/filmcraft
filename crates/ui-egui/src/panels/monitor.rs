@@ -1392,6 +1392,15 @@ mod tests {
         assert!(transport_visible(&source, "playhead.stepForward"));
     }
 
+    /// An eyedropper pick fills the parameter with the pixel's own colour, so the picker's swatch
+    /// shows exactly the pixel that was clicked (not its linear value, which reads darker).
+    #[test]
+    fn an_eyedropper_pick_is_the_pixel_colour() {
+        let c = eyedropper_value([0xe2, 0x7d, 0x38]);
+        assert_eq!(c, [226.0 / 255.0, 125.0 / 255.0, 56.0 / 255.0, 1.0]);
+        assert_eq!(crate::widgets::param_to_rgba(c).to_srgba_unmultiplied(), [0xe2, 0x7d, 0x38, 255]);
+    }
+
     #[test]
     fn loop_command_turns_the_monitor_loop_state_on_and_off() {
         let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
