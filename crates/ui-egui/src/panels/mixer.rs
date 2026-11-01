@@ -169,6 +169,36 @@ struct Ctx<'a> {
     now: filmcraft_time::Tick,
     recording: bool,
     acts: Vec<(String, Value)>,
+    /// A mixer insert being dragged by its slot (reorder or move to another strip).
+    drag: Option<MixerDrag>,
+    /// Where the pointer would drop it this frame: `(strip, insert index in the post-removal list)`.
+    drop_target: Option<(TrackId, usize)>,
+}
+
+/// A mixer insert slot being dragged: its strip and slot, plus the strip reference its name plate
+/// shows.
+#[derive(Clone)]
+struct MixerDrag {
+    from_strip: u64,
+    from_slot: usize,
+    name: String,
+}
+
+/// Show a dragged mixer insert's name below-right of the pointer, the same translucent plate the
+/// effect reorder ghost uses.
+fn paint_mixer_drag_label(ui: &egui::Ui, drag: Option<&MixerDrag>, t: &Tokens) {
+    let Some(drag) = drag else { return };
+    let Some(pointer) = ui.input(|i| i.pointer.latest_pos()) else { return };
+    let ctx = ui.ctx();
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("mixer-drag-label")));
+    let galley = painter.layout_no_wrap(drag.name.clone(), Tokens::ui(12.0), Color32::WHITE);
+    let size = galley.size() + vec2(16.0, 8.0);
+    let desired = pointer + vec2(12.0, 14.0);
+    let screen = ctx.content_rect();
+    let max = pos2((screen.max.x - size.x).max(screen.min.x), (screen.max.y - size.y).max(screen.min.y));
+    let min = pos2(desired.x.clamp(screen.min.x, max.x), desired.y.clamp(screen.min.y, max.y));
+    painter.rect_filled(Rect::from_min_size(min, size), 4.0, t.focus.gamma_multiply(0.85));
+    painter.galley(min + vec2(8.0, 4.0), galley, Color32::WHITE);
 }
 
 impl Ctx<'_> {
@@ -186,8 +216,9 @@ fn small_text(ui: &egui::Ui, pos: egui::Pos2, align: Align2, s: &str, size: f32,
     ui.painter().text(pos, align, s, Tokens::ui(size), c);
 }
 
-fn slot_box(ui: &mut egui::Ui, r: Rect, text: &str, filled: bool, dim: bool, t: &Tokens, id: egui::Id) -> egui::Response {
-    let resp = ui.interact(r, id, Sense::click());
+#[allow(clippy::too_many_arguments)]
+fn slot_box(ui: &mut egui::Ui, r: Rect, text: &str, filled: bool, dim: bool, t: &Tokens, id: egui::Id, sense: Sense) -> egui::Response {
+    let resp = ui.interact(r, id, sense);
     ui.painter().rect_filled(r, 2.0, if resp.hovered() { t.hover } else { t.field_bg });
     ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let col = if !filled || dim { t.text_faint } else { t.text };
@@ -256,7 +287,10 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let meters = poll_meters(app, ui);
-    let mut cx = Ctx { t, seq, now: app.session.playhead(), recording: app.session.mixrec.active(), acts: Vec::new() };
+    let drag_id = egui::Id::unique("mixer-insert-drag");
+    let drag: Option<MixerDrag> = ui.data(|d| d.get_temp(drag_id));
+    let mut cx =
+        Ctx { t, seq, now: app.session.playhead(), recording: app.session.mixrec.active(), acts: Vec::new(), drag, drop_target: None };
     let footer = Rect::from_min_max(pos2(rect.min.x, rect.max.y - 34.0), rect.max);
     let body = Rect::from_min_max(pos2(rect.min.x, rect.min.y + 2.0), pos2(rect.max.x, footer.min.y));
     // effects / sends disclosure at the left edge
@@ -371,6 +405,30 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         };
         strip(app, &mut cui, &mut cx, *id, sr, &m);
     }
+    // Commit a mixer insert drag: the last slot the pointer was over decides the drop. A
+    // same-strip drop below the source lands one slot earlier once the source is removed.
+    paint_mixer_drag_label(ui, cx.drag.as_ref(), &t);
+    if let Some(drag) = cx.drag.take() {
+        if ui.input(|i| i.pointer.any_released()) {
+            if let Some((to_strip, mut to_slot)) = cx.drop_target {
+                if to_strip.0 == drag.from_strip && to_slot > drag.from_slot {
+                    to_slot -= 1;
+                }
+                if to_strip.0 != drag.from_strip || to_slot != drag.from_slot {
+                    cx.cmd("mixer.moveInsert", json!({"strip": drag.from_strip, "slot": drag.from_slot, "toStrip": to_strip.0, "toSlot": to_slot}));
+                }
+            }
+        } else {
+            cx.drag = Some(drag);
+        }
+    }
+    ui.data_mut(|d| {
+        if let Some(dr) = cx.drag.clone() {
+            d.insert_temp(drag_id, dr);
+        } else {
+            d.remove::<MixerDrag>(drag_id);
+        }
+    });
     transport(app, ui, footer, &mut cx);
     let acts = std::mem::take(&mut cx.acts);
     run_actions(app, &ui.ctx().clone(), acts);
@@ -441,8 +499,34 @@ fn mixer_slots(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: Trac
                 Some(e) => format!("{}{}", if e.post_fader { "> " } else { "" }, e.def().map(|d| d.name).unwrap_or(&e.effect)),
                 None => String::new(),
             };
-            let resp = slot_box(ui, r, &text, fx.is_some(), fx.is_some_and(|e| !e.enabled), &t, egui::Id::unique((&ap, "fx", k)));
+            let filled = fx.is_some();
+            let resp = slot_box(
+                ui,
+                r,
+                &text,
+                filled,
+                fx.is_some_and(|e| !e.enabled),
+                &t,
+                egui::Id::unique((&ap, "fx", k)),
+                if filled { Sense::click_and_drag() } else { Sense::click() },
+            );
             app.auto.add(&format!("{ap}.fx.{k}"), r, &if text.is_empty() { format!("Effect slot {}", k + 1) } else { text.clone() });
+            // Drag a filled slot to reorder the chain or move the effect to another strip: the
+            // pointer becomes a hand, the name rides along, and the drop lands on an accent line.
+            if filled && resp.drag_started() {
+                cx.drag = Some(MixerDrag { from_strip: id.0, from_slot: k, name: text.trim_start_matches("> ").to_string() });
+            }
+            if cx.drag.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                if let Some(pos) = ui.ctx().pointer_hover_pos()
+                    && r.contains(pos)
+                {
+                    let below = pos.y > r.center().y;
+                    cx.drop_target = Some((id, if below { k + 1 } else { k }));
+                    let ly = if below { r.max.y } else { r.min.y };
+                    ui.painter().line_segment([pos2(r.min.x, ly), pos2(r.max.x, ly)], Stroke::new(2.0, t.accent));
+                }
+            }
             let can_add = fx.is_none() && k == tr.effects.len();
             egui::Popup::menu(&resp).show(|ui| {
                 ui.set_min_width(180.0);
@@ -532,7 +616,7 @@ fn mixer_slots(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: Trac
                 y += SLOT_H;
                 continue;
             }
-            let resp = slot_box(ui, r, &text, snd.is_some(), snd.is_some_and(|s| s.muted), &t, egui::Id::unique((&ap, "send", k)));
+            let resp = slot_box(ui, r, &text, snd.is_some(), snd.is_some_and(|s| s.muted), &t, egui::Id::unique((&ap, "send", k)), Sense::click());
             app.auto.add(&format!("{ap}.send.{k}"), r, &if text.is_empty() { format!("Send slot {}", k + 1) } else { text.clone() });
             let can_add = snd.is_none() && k == tr.mixer.sends.len();
             let tg = targets(seq, id);

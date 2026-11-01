@@ -503,3 +503,35 @@ fn paused_meters_repaint_without_input_and_settle_after_release() {
         d.snapshot(&format!("meters-{workspace}-paused-silent"), None);
     }
 }
+
+/// Dragging a mixer insert slot reorders the chain: the pointer becomes a hand as it drags and
+/// the drop lands where the accent line showed.
+#[test]
+fn dragging_a_mixer_insert_reorders_the_chain() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Audio"}));
+    d.frames(3);
+    d.click("mixer.showEffects");
+    d.exec("mixer.addInsert", json!({"strip": "A1", "effect": "amplify"}));
+    d.exec("mixer.addInsert", json!({"strip": "A1", "effect": "dynamics"}));
+    d.frames(3);
+    let from = d.element("mixer.A1.fx.0").expect("slot 0");
+    let to = d.element("mixer.A1.fx.2").expect("slot 2");
+    let a = egui::pos2(from[0] + from[2] / 2.0, from[1] + from[3] / 2.0);
+    let b = egui::pos2(to[0] + to[2] / 2.0, to[1] + to[3] / 2.0);
+    let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+    push(&mut d, egui::Event::PointerMoved(a));
+    d.frames(1);
+    push(&mut d, egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    d.frames(1);
+    for k in 1..=6 {
+        let p = a + (b - a) * (k as f32 / 6.0);
+        push(&mut d, egui::Event::PointerMoved(p));
+        d.frames(1);
+    }
+    push(&mut d, egui::Event::PointerButton { pos: b, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    d.frames(3);
+    let inserts = d.strip("A1")["inserts"].as_array().unwrap().clone();
+    assert_eq!(inserts[0]["effect"], "dynamics", "{inserts:?}");
+    assert_eq!(inserts[1]["effect"], "amplify", "{inserts:?}");
+}
