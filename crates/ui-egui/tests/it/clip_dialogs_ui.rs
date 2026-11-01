@@ -72,6 +72,12 @@ impl Driver {
         self.frames(3);
     }
 
+    /// Click `id` with Alt held (solo/invert gestures).
+    fn click_alt(&mut self, id: &str) {
+        self.ok("ui.click", json!({"id": id, "modifiers": {"alt": true}}));
+        self.frames(3);
+    }
+
     fn has(&mut self, id: &str) -> bool {
         let v = self.ok("ui.elements", json!({"prefix": id}));
         v.as_array().unwrap().iter().any(|e| e["id"] == json!(id))
@@ -198,6 +204,35 @@ fn remove_attributes_dialog_leaves_out_essential_sound_effects() {
     let left = a1(&mut d);
     assert_eq!(left.effects.iter().filter(|e| e.effect == manual).count(), 1, "the Essential Sound one stays");
     assert!(left.effects.iter().filter(|e| e.effect == manual).all(|e| e.essential));
+}
+
+/// Alt-click on an attribute checkbox solos it, and a second Alt-click inverts the set (#solo-invert).
+#[test]
+fn alt_click_solos_and_inverts_the_attribute_checkboxes() {
+    let mut d = Driver::new();
+    let (a, b) = (d.v1(0), d.v1(2));
+    d.exec("effects.apply", json!({"clips": [a.id.0], "effect": "gaussian_blur"}));
+    d.exec("timeline.select", json!({"clips": [a.id.0]}));
+    d.exec("edit.copy", json!({}));
+    d.exec("timeline.select", json!({"clips": [b.id.0]}));
+    assert_eq!(d.menu("edit.pasteAttributes")["dialog"], "pasteAttributes");
+    let param = |d: &mut Driver, k: &str| d.app().ui.clip_dialog.as_ref().map(|g| g.params[k].clone());
+    // Alt-click Opacity: only it stays checked
+    d.click_alt("pasteAttributes.opacity");
+    assert_eq!(param(&mut d, "opacity"), Some(json!(true)));
+    assert_eq!(param(&mut d, "motion"), Some(json!(false)));
+    assert_eq!(param(&mut d, "volume"), Some(json!(false)));
+    assert_eq!(param(&mut d, "effects"), Some(json!([])));
+    assert_eq!(param(&mut d, "scaleTimes"), Some(json!(false)));
+    // a second Alt-click inverts: every other attribute on, Opacity off
+    d.click_alt("pasteAttributes.opacity");
+    assert_eq!(param(&mut d, "opacity"), Some(json!(false)));
+    assert_eq!(param(&mut d, "motion"), Some(json!(true)));
+    assert_eq!(param(&mut d, "volume"), Some(json!(true)));
+    assert_eq!(param(&mut d, "effects"), Some(json!(["gaussian_blur"])));
+    assert_eq!(param(&mut d, "scaleTimes"), Some(json!(true)));
+    d.click("pasteAttributes.cancel");
+    assert!(d.app().ui.clip_dialog.is_none());
 }
 
 #[test]

@@ -150,3 +150,36 @@ fn a_right_click_on_a_header_button_opens_the_menu() {
     assert_eq!(serde_json::to_value(q.video_tracks[0].clone()).unwrap(), before, "no button toggled");
     assert!(!q.audio_tracks[0].muted && !q.audio_tracks[0].solo);
 }
+
+/// Alt-click on a track lock or target button isolates that track (solo); a second Alt-click
+/// inverts it (every other track).
+#[test]
+fn alt_click_isolates_the_track_lock_and_targeting() {
+    let mut d = Driver::demo();
+    let (v1, v2, a1, a2) = {
+        let q = d.harness.state().session.active_sequence().unwrap();
+        (q.video_tracks[0].id, q.video_tracks[1].id, q.audio_tracks[0].id, q.audio_tracks[1].id)
+    };
+    let locked = |d: &mut Driver, id: filmcraft_engine::project::TrackId| {
+        d.harness.state().session.active_sequence().unwrap().track(id).map(|t| t.locked).unwrap()
+    };
+    // lock V1 normally, then Alt-click V2: only V2 stays locked
+    d.ok("ui.click", json!({"id": "timeline.track.V1.locked"}));
+    d.ok("ui.click", json!({"id": "timeline.track.V2.locked", "modifiers": {"alt": true}}));
+    d.frames(3);
+    assert_eq!((locked(&mut d, v1), locked(&mut d, v2), locked(&mut d, a1), locked(&mut d, a2)), (false, true, false, false));
+    // Alt-click V2 again inverts: every other track locked and V2 unlocked
+    d.ok("ui.click", json!({"id": "timeline.track.V2.locked", "modifiers": {"alt": true}}));
+    d.frames(3);
+    assert_eq!((locked(&mut d, v1), locked(&mut d, v2), locked(&mut d, a1), locked(&mut d, a2)), (true, false, true, true));
+    // targeting: Alt-click A1 solos it, a second click inverts
+    d.ok("ui.click", json!({"id": "timeline.track.A1.target", "modifiers": {"alt": true}}));
+    d.frames(3);
+    let tg = d.harness.state().session.targeting();
+    assert_eq!(tg.targeted, vec![a1]);
+    d.ok("ui.click", json!({"id": "timeline.track.A1.target", "modifiers": {"alt": true}}));
+    d.frames(3);
+    let tg = d.harness.state().session.targeting();
+    assert!(!tg.targeted.contains(&a1));
+    assert!(tg.targeted.contains(&v1) && tg.targeted.contains(&v2) && tg.targeted.contains(&a2));
+}
