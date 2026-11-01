@@ -835,8 +835,41 @@ fn remove_insert(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
-fn set_insert(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = strip_p(s, p, "mixer.setInsert")?;
+/// Move a mixer insert to another slot, on the same strip or another: the sequence's insert order
+/// is the signal chain, so this reorders a chain or moves an effect between tracks.
+fn move_insert(s: &mut Session, p: &Value) -> Result<Value> {
+    let from = strip_p(s, p, "mixer.moveInsert")?;
+    let slot = slot_p(p, "mixer.moveInsert")?;
+    let to = match p.get("toStrip") {
+        Some(v) => {
+            let seq = active_seq(s)?;
+            strip_ref(seq, v).ok_or_else(|| bad("mixer.moveInsert", format!("no strip {v}")))?
+        }
+        None => from,
+    };
+    let to_slot = u64_p(p, "toSlot").map(|v| v as usize);
+    s.edit_sequence("Move Track Effect", move |q, _, _| {
+        // Refuse a cross-strip move into a full strip before removing anything, so a rejected
+        // move leaves the project untouched.
+        if from != to {
+            let n = q.strip(to).map(|t| t.effects.len()).unwrap_or(0);
+            if n >= pm::MAX_INSERTS {
+                return Err(EngineError::Other(format!("mixer.moveInsert: all {} effect slots are in use", pm::MAX_INSERTS)));
+            }
+        }
+        let inst = q
+            .with_strip_mut(from, |t| if slot < t.effects.len() { Some(t.effects.remove(slot)) } else { None })
+            .flatten()
+            .ok_or_else(|| EngineError::Other("mixer.moveInsert: no effect in that slot".into()))?;
+        let n = q.strip(to).map(|t| t.effects.len()).unwrap_or(0);
+        let at = to_slot.unwrap_or(n).min(n);
+        q.with_strip_mut(to, |t| t.effects.insert(at, inst)).ok_or_else(|| EngineError::Other("mixer.moveInsert: no such strip".into()))?;
+        Ok(())
+    })?;
+    Ok(Value::Null)
+}
+
+fn set_insert(s: &mut Session, p: &Value) -> Result<Value> {    let id = strip_p(s, p, "mixer.setInsert")?;
     let slot = slot_p(p, "mixer.setInsert")?;
     let p = p.clone();
     s.edit_sequence("Track Effect Settings", move |q, _, _| {
@@ -1448,6 +1481,16 @@ pub fn commands() -> Vec<CommandSpec> {
             params: r#"{"strip":"A1"|"S1"|"Mix"|id,"slot":n,"enabled":bool?,"postFader":bool?,"params":{id:value}?}"#,
             enabled: has_seq,
             run: set_insert,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.moveInsert",
+            label: "Move Track Effect",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"slot":n,"toStrip":"A1"|id?,"toSlot":n?}"#,
+            enabled: has_seq,
+            run: move_insert,
             journal: true,
         }),
         spec(CommandDefinition {

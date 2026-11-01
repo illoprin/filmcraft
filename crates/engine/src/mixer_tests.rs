@@ -43,6 +43,7 @@ fn every_mixer_command_is_registered_with_a_label() {
         "mixer.addInsert",
         "mixer.removeInsert",
         "mixer.setInsert",
+        "mixer.moveInsert",
         "mixer.addSend",
         "mixer.setSend",
         "mixer.removeSend",
@@ -619,4 +620,48 @@ fn audio_transition_schema_lists_edge_params_and_reverse() {
     for key in ["\"edge\"", "\"params\"", "\"reverse\"", "constant_power"] {
         assert!(params.contains(key), "schema `{params}` is missing {key}");
     }
+}
+
+/// Moving a mixer insert reorders a chain or moves an effect to another strip as one undo step.
+#[test]
+fn move_insert_reorders_and_moves_between_strips() {
+    let mut s = demo();
+    s.execute("mixer.addInsert", json!({"strip": "A1", "effect": "dynamics"})).unwrap();
+    s.execute("mixer.addInsert", json!({"strip": "A1", "effect": "amplify"})).unwrap();
+    let names = |s: &Session| a1(s).effects.iter().map(|e| e.effect.clone()).collect::<Vec<_>>();
+    // reorder within the strip: move the second insert to the front
+    s.execute("mixer.moveInsert", json!({"strip": "A1", "slot": 1, "toSlot": 0})).unwrap();
+    assert_eq!(names(&s), ["amplify", "dynamics"]);
+    // move the front effect to the end (the post-removal index)
+    s.execute("mixer.moveInsert", json!({"strip": "A1", "slot": 0, "toSlot": 1})).unwrap();
+    assert_eq!(names(&s), ["dynamics", "amplify"]);
+    // move it onto a submix
+    s.execute("mixer.addSubmix", json!({"name": "Reverb"})).unwrap();
+    s.execute("mixer.moveInsert", json!({"strip": "A1", "slot": 0, "toStrip": "S1"})).unwrap();
+    assert_eq!(names(&s), ["amplify"]);
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.submix_tracks[0].effects.len(), 1);
+    assert_eq!(q.submix_tracks[0].effects[0].effect, "dynamics");
+    // one undo step puts it back
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(names(&s), ["dynamics", "amplify"]);
+    assert!(s.active_sequence().unwrap().submix_tracks[0].effects.is_empty());
+    // errors leave the project untouched
+    assert!(s.execute("mixer.moveInsert", json!({"strip": "A1", "slot": 9})).is_err());
+    assert!(s.execute("mixer.moveInsert", json!({"strip": "A1", "slot": 0, "toStrip": "S9"})).is_err());
+    assert_eq!(names(&s), ["dynamics", "amplify"]);
+}
+
+/// A move into a full strip is refused before anything is removed.
+#[test]
+fn move_insert_refuses_a_full_destination() {
+    let mut s = demo();
+    for _ in 0..5 {
+        s.execute("mixer.addInsert", json!({"strip": "A1", "effect": "dynamics"})).unwrap();
+    }
+    s.execute("mixer.addSubmix", json!({"name": "Reverb"})).unwrap();
+    s.execute("mixer.addInsert", json!({"strip": "S1", "effect": "amplify"})).unwrap();
+    assert!(s.execute("mixer.moveInsert", json!({"strip": "S1", "slot": 0, "toStrip": "A1"})).is_err());
+    assert_eq!(a1(&s).effects.len(), 5, "the full strip is untouched");
+    assert_eq!(s.active_sequence().unwrap().submix_tracks[0].effects.len(), 1, "the source is untouched too");
 }
