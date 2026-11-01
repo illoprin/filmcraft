@@ -565,27 +565,39 @@ pub(crate) fn copy_for_shortcut(app: &mut FilmcraftApp) {
     copy_selected_effects(app);
 }
 
-/// Copy the panel's selection, or the effect it has selected or clicked.
-pub(crate) fn copy_selected_effects(app: &mut FilmcraftApp) {
-    let Some((clip, item, _)) = selected_clip(app) else { return };
+/// The clip and effect a panel Copy would act on: the effect the panel has selected (or the
+/// engine's current effect selection), resolved to the clip it belongs to — on a compound clip
+/// that may be the audio half, which the video-first [`selected_clip`] would miss — else the shown
+/// clip's first selected effect.
+fn copy_effect_target(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, usize)> {
+    let clips = selected_clips(app);
+    let named = app
+        .ui
+        .selected_effects
+        .first()
+        .map(|selection| selection.clip)
+        .or_else(|| app.session.state.selected_effect.as_ref().map(|selection| selection.clip));
+    let (clip, item) = named
+        .and_then(|id| clips.iter().find(|(c, _, _)| *c == id))
+        .or_else(|| clips.first())
+        .map(|(c, item, _)| (*c, item.clone()))?;
     let selected = selected_effect_indices(app, clip, &item.effects);
     let fallback = app.session.state.selected_effect.as_ref().filter(|selection| selection.clip == clip).and_then(|selection| selection.index(&item.effects));
-    if let Some(index) = selected.first().copied().or(fallback) {
+    Some((clip, item, selected.first().copied().or(fallback)?))
+}
+
+/// Copy the panel's selection, or the effect it has selected or clicked.
+pub(crate) fn copy_selected_effects(app: &mut FilmcraftApp) {
+    if let Some((clip, item, index)) = copy_effect_target(app) {
         copy_effects(app, clip, &item, index);
     }
 }
 
-/// Whether Ctrl+V has something to paste onto the Timeline selection.
 /// Whether Ctrl+C has something to copy in Effect Controls: a selected keyframe, or an effect the
 /// panel would copy. The panel claims Copy only while this holds, so a pointer resting on an empty
 /// panel leaves the chord to the Timeline selection.
 pub(crate) fn can_copy_for_shortcut(app: &FilmcraftApp) -> bool {
-    if !app.ui.keyframe_selection.is_empty() {
-        return true;
-    }
-    let Some((clip, item, _)) = selected_clip(app) else { return false };
-    !selected_effect_indices(app, clip, &item.effects).is_empty()
-        || app.session.state.selected_effect.as_ref().is_some_and(|selection| selection.clip == clip && selection.index(&item.effects).is_some())
+    !app.ui.keyframe_selection.is_empty() || copy_effect_target(app).is_some()
 }
 
 /// Whether Del or Clear has something to remove in Effect Controls: a selected keyframe, or a
@@ -698,11 +710,42 @@ mod delete_shortcut_tests {
         assert!(can_copy_for_shortcut(&app), "Motion can still be copied");
         assert!(!can_delete_for_shortcut(&app), "Motion is intrinsic");
     }
+
+    /// Ctrl+C on an effect selected on a compound clip's audio half copies the audio effects, not
+    /// the video chain that the video-first `selected_clip` would pick.
+    #[test]
+    fn copying_a_selected_audio_effect_uses_the_linked_audio_clip() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let (video, audio) = {
+            let sequence = session.active_sequence().unwrap();
+            (sequence.video_tracks[0].items[0].id, sequence.audio_tracks[0].items[0].id)
+        };
+        // selecting the picture links the sound (linked selection), so the panel shows both halves
+        session.execute("timeline.select", json!({"clips": [video.0]})).unwrap();
+        session.execute("effects.apply", json!({"clips": [audio.0], "effect": "amplify"})).unwrap();
+        session.execute("effects.select", json!({"clip": audio.0, "effect": "amplify"})).unwrap();
+        let audio_effects = &session.active_sequence().unwrap().find_item(audio).unwrap().1.effects;
+        let selected = filmcraft_engine::EffectSel::of(audio, audio_effects, audio_effects.iter().position(|e| e.effect == "amplify").unwrap()).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.selected_effects = vec![selected];
+
+        assert!(can_copy_for_shortcut(&app), "the audio effect is copyable through the compound clip");
+        copy_selected_effects(&mut app);
+
+        let clipboard = app.session.state.effect_clipboard.as_ref().expect("an effect was copied");
+        assert!(clipboard.effects.iter().any(|e| e.effect == "amplify"), "the audio effect landed on the clipboard: {:?}", clipboard.effects);
+        assert!(
+            clipboard.effects.iter().all(|e| filmcraft_project::find_effect(&e.effect).is_some_and(|d| d.kind == filmcraft_project::EffectKind::Audio)),
+            "only audio effects were copied"
+        );
+    }
 }
 
 /// Ctrl+V in Effect Controls: paste keyframes or effects, whichever the clipboard holds.
 /// Effect Controls for the selected clip — or for the selected transition. Draws the effect chain,
 /// its parameters and the keyframe lane.
+#[allow(clippy::cognitive_complexity)]
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
