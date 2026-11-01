@@ -3514,6 +3514,46 @@ fn build() -> Vec<CommandSpec> {
             s.state.targeting.insert(seq_id, tg);
             Ok(Value::Null)
         }),
+        // Alt on a track lock isolates it: with `invert` false only that track stays locked, with
+        // `invert` true every other track is locked and the target unlocked (a second Alt-click).
+        cmd!("timeline.isolateTrackLock", "Isolate Track Lock", [], None, r#"{"track":"V1"|id,"invert":bool=false}"#, has_seq, |s, p| {
+            let tr = track_p(s, p, "track", "timeline.isolateTrackLock")?.ok_or_else(|| bad("timeline.isolateTrackLock", "need `track`"))?;
+            let invert = p.get("invert").and_then(Value::as_bool).unwrap_or(false);
+            let ids: Vec<TrackId> = s
+                .active_sequence()
+                .map(|q| q.video_tracks.iter().chain(q.audio_tracks.iter()).map(|t| t.id).collect())
+                .unwrap_or_default();
+            if !ids.contains(&tr) {
+                return Err(EngineError::Other("timeline.isolateTrackLock: no such track".into()));
+            }
+            s.edit_sequence("Isolate Track Lock", |q, _, _| {
+                for id in &ids {
+                    if let Some(t) = q.track_mut(*id) {
+                        t.locked = if *id == tr { !invert } else { invert };
+                    }
+                }
+                Ok(())
+            })?;
+            Ok(Value::Null)
+        }),
+        // Alt on a target-track button isolates the targeting the same way (`invert` for the
+        // second press: every track but the target).
+        cmd!("timeline.isolateTargeting", "Isolate Track Targeting", [], None, r#"{"track":"V1"|id,"invert":bool=false}"#, has_seq, |s, p| {
+            let tr = track_p(s, p, "track", "timeline.isolateTargeting")?.ok_or_else(|| bad("timeline.isolateTargeting", "need `track`"))?;
+            let invert = p.get("invert").and_then(Value::as_bool).unwrap_or(false);
+            let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+            let all: Vec<TrackId> = s
+                .active_sequence()
+                .map(|q| q.video_tracks.iter().chain(q.audio_tracks.iter()).map(|t| t.id).collect())
+                .unwrap_or_default();
+            if !all.contains(&tr) {
+                return Err(EngineError::Other("timeline.isolateTargeting: no such track".into()));
+            }
+            let mut tg = s.targeting();
+            tg.targeted = all.into_iter().filter(|id| if invert { *id != tr } else { *id == tr }).collect();
+            s.state.targeting.insert(seq_id, tg);
+            Ok(Value::Null)
+        }),
         // ================= Effects =================
         cmd!("effects.apply", "Apply Effect", [], None, r#"{"clips":[id]?,"effect":"gaussian_blur|Gaussian Blur|…"}"#, has_seq, |s, p| {
             let name = str_p(p, "effect").ok_or_else(|| bad("effects.apply", "need `effect`"))?;

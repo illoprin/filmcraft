@@ -312,6 +312,63 @@ fn check(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &s
     }
 }
 
+/// Whether a Paste / Remove Attributes checkbox is on: an intrinsic is a `params` bool, an effect
+/// is an id in `params["effects"]`.
+fn attribute_is_on(p: &Value, key: &str) -> bool {
+    match key.strip_prefix("effect.") {
+        Some(id) => p["effects"].as_array().is_some_and(|x| x.iter().any(|e| e.as_str() == Some(id))),
+        None => p.get(key).and_then(Value::as_bool).unwrap_or(false),
+    }
+}
+
+/// Set one Paste / Remove Attributes checkbox, writing an intrinsic bool or the effect id list.
+fn attribute_set(p: &mut Value, key: &str, on: bool) {
+    match key.strip_prefix("effect.") {
+        Some(id) => {
+            let mut list: Vec<Value> = p["effects"].as_array().cloned().unwrap_or_default();
+            list.retain(|e| e.as_str() != Some(id));
+            if on {
+                list.push(json!(id));
+            }
+            p["effects"] = Value::Array(list);
+        }
+        None => p[key] = json!(on),
+    }
+}
+
+/// Alt-click on an attribute checkbox isolates it: the first press leaves only `key` on, a second
+/// press (when it is already the only one on) turns every other attribute on and `key` off.
+fn attribute_alt_toggle(p: &mut Value, all: &[String], key: &str) {
+    let only = all.iter().all(|k| k == key || !attribute_is_on(p, k));
+    let invert = attribute_is_on(p, key) && only;
+    for k in all {
+        attribute_set(p, k, if invert { k != key } else { k == key });
+    }
+}
+
+/// A Paste / Remove Attributes checkbox that also takes Alt for solo/invert across `all`.
+#[allow(clippy::too_many_arguments)]
+fn attr_check(
+    ui: &mut egui::Ui,
+    elems: &mut Elems,
+    pre: &str,
+    p: &mut Value,
+    key: &str,
+    label: &str,
+    enabled: bool,
+    alt: bool,
+    all: &[String],
+) {
+    let mut v = attribute_is_on(p, key);
+    let r = ui.add_enabled(enabled, egui::Checkbox::new(&mut v, label));
+    push(elems, format!("{pre}.{key}"), &r, label);
+    if r.clicked() && alt {
+        attribute_alt_toggle(p, all, key);
+    } else if r.changed() {
+        attribute_set(p, key, v);
+    }
+}
+
 fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, width: f32) {
     ui.horizontal(|ui| {
         ui.label(label);
@@ -376,38 +433,43 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         match d.command.as_str() {
             "edit.pasteAttributes" | "edit.removeAttributes" => {
                 let (v, a) = (d.info["video"].as_bool().unwrap_or(true), d.info["audio"].as_bool().unwrap_or(true));
-                ui.label(RichText::new(tl!("Video Attributes")).strong());
-                for (k, l) in intrinsic_video() {
-                    check(ui, &mut elems, pre, p, k, l, v);
-                }
-                ui.label(RichText::new(tl!("Audio Attributes")).strong());
-                for (k, l) in intrinsic_audio() {
-                    check(ui, &mut elems, pre, p, k, l, a);
-                }
+                let alt = ui.input(|i| i.modifiers.alt);
                 let effects: Vec<(String, String)> = d.info["effects"]
                     .as_array()
                     .map(|x| x.iter().filter_map(|e| Some((e[0].as_str()?.to_string(), e[1].as_str()?.to_string()))).collect())
                     .unwrap_or_default();
+                // Every attribute this dialog can toggle, for Alt solo/invert: the intrinsics that
+                // apply to the clip, its effects, and (Paste only) Scale Attribute Times.
+                let scale = d.command == "edit.pasteAttributes";
+                let mut all: Vec<String> = Vec::new();
+                if v {
+                    all.extend(intrinsic_video().iter().map(|(k, _)| (*k).to_string()));
+                }
+                if a {
+                    all.extend(intrinsic_audio().iter().map(|(k, _)| (*k).to_string()));
+                }
+                all.extend(effects.iter().map(|(id, _)| format!("effect.{id}")));
+                if scale {
+                    all.push("scaleTimes".to_string());
+                }
+                ui.label(RichText::new(tl!("Video Attributes")).strong());
+                for (k, l) in intrinsic_video() {
+                    attr_check(ui, &mut elems, pre, p, k, l, v, alt, &all);
+                }
+                ui.label(RichText::new(tl!("Audio Attributes")).strong());
+                for (k, l) in intrinsic_audio() {
+                    attr_check(ui, &mut elems, pre, p, k, l, a, alt, &all);
+                }
                 ui.label(RichText::new(tl!("Effects")).strong());
                 if effects.is_empty() {
                     ui.label(RichText::new(tl!("No effects")).weak());
                 }
                 for (id, name) in &effects {
-                    let mut on = p["effects"].as_array().is_some_and(|x| x.iter().any(|e| e.as_str() == Some(id)));
-                    let r = ui.checkbox(&mut on, crate::i18n::t(name));
-                    push(&mut elems, format!("{pre}.effect.{id}"), &r, name.as_str());
-                    if r.changed() {
-                        let mut list: Vec<Value> = p["effects"].as_array().cloned().unwrap_or_default();
-                        list.retain(|e| e.as_str() != Some(id));
-                        if on {
-                            list.push(json!(id));
-                        }
-                        p["effects"] = Value::Array(list);
-                    }
+                    attr_check(ui, &mut elems, pre, p, &format!("effect.{id}"), name.as_str(), true, alt, &all);
                 }
-                if d.command == "edit.pasteAttributes" {
+                if scale {
                     ui.separator();
-                    check(ui, &mut elems, pre, p, "scaleTimes", tl!("Scale Attribute Times"), true);
+                    attr_check(ui, &mut elems, pre, p, "scaleTimes", tl!("Scale Attribute Times"), true, alt, &all);
                 }
             }
             "file.newOfflineFile" => {
@@ -843,5 +905,31 @@ pub(crate) mod tests {
     #[test]
     fn every_command_with_a_clip_dialog_can_be_bound() {
         assert_dialog_commands_bindable("clip_dialogs::meta", |id| meta(id).is_some(), &[]);
+    }
+
+    /// Alt-click isolates one attribute; a second Alt-click inverts it (every other attribute on).
+    #[test]
+    fn attribute_alt_toggle_solos_then_inverts() {
+        let all: Vec<String> = ["motion", "opacity", "effect.gaussian_blur", "scaleTimes"].iter().map(|s| s.to_string()).collect();
+        let mut p = json!({"motion": true, "opacity": true, "effects": ["gaussian_blur"], "scaleTimes": true});
+        // solo opacity: only it stays on
+        attribute_alt_toggle(&mut p, &all, "opacity");
+        assert_eq!((p["motion"].clone(), p["opacity"].clone()), (json!(false), json!(true)));
+        assert_eq!(p["effects"], json!([]));
+        assert_eq!(p["scaleTimes"], json!(false));
+        // a second Alt-click on the same box inverts: everything except opacity
+        attribute_alt_toggle(&mut p, &all, "opacity");
+        assert_eq!((p["motion"].clone(), p["opacity"].clone()), (json!(true), json!(false)));
+        assert_eq!(p["effects"], json!(["gaussian_blur"]));
+        assert_eq!(p["scaleTimes"], json!(true));
+        // an effect checkbox solos the same way (it lives in the effects array, not a bool)
+        attribute_alt_toggle(&mut p, &all, "effect.gaussian_blur");
+        assert_eq!(p["effects"], json!(["gaussian_blur"]));
+        assert_eq!(p["motion"], json!(false));
+        // only the attributes that apply to the clip are considered
+        let only_video: Vec<String> = ["motion", "opacity"].iter().map(|s| s.to_string()).collect();
+        let mut q = json!({"motion": false, "opacity": false});
+        attribute_alt_toggle(&mut q, &only_video, "motion");
+        assert_eq!((q["motion"].clone(), q["opacity"].clone()), (json!(true), json!(false)));
     }
 }

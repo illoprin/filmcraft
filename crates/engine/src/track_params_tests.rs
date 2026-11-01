@@ -149,3 +149,38 @@ fn a_track_carries_a_colour_label() {
     s.execute("timeline.setTrack", json!({"track": "A1", "muted": true})).unwrap();
     assert_eq!(label(&mut s, "audio"), json!("Mango"));
 }
+
+/// Alt-click on a track lock or target button isolates that track (solo); a second press with
+/// `invert` flips it (every other track).
+#[test]
+fn isolate_track_lock_and_targeting() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Isolate", "video": 2, "audio": 2})).unwrap();
+    let (v1, v2, a1, a2) = {
+        let q = s.active_sequence().unwrap();
+        (q.video_tracks[0].id, q.video_tracks[1].id, q.audio_tracks[0].id, q.audio_tracks[1].id)
+    };
+    // solo the lock on V2: only V2 stays locked
+    s.execute("timeline.setTrack", json!({"track": v1.0, "locked": true})).unwrap();
+    s.execute("timeline.isolateTrackLock", json!({"track": v2.0})).unwrap();
+    let locked = |s: &Session| {
+        let q = s.active_sequence().unwrap();
+        q.video_tracks.iter().chain(q.audio_tracks.iter()).map(|t| t.locked).collect::<Vec<_>>()
+    };
+    assert_eq!(locked(&s), [false, true, false, false]);
+    // invert: every other track locked and V2 unlocked
+    s.execute("timeline.isolateTrackLock", json!({"track": v2.0, "invert": true})).unwrap();
+    assert_eq!(locked(&s), [true, false, true, true]);
+    // targeting isolates the same way (it starts with every track targeted)
+    s.execute("timeline.isolateTargeting", json!({"track": a1.0})).unwrap();
+    assert_eq!(s.targeting().targeted, vec![a1]);
+    s.execute("timeline.isolateTargeting", json!({"track": a1.0, "invert": true})).unwrap();
+    let tg = s.targeting();
+    assert!(!tg.targeted.contains(&a1));
+    assert!(tg.targeted.contains(&v1) && tg.targeted.contains(&v2) && tg.targeted.contains(&a2));
+    // a missing track is refused and changes nothing
+    let before = locked(&s);
+    assert!(s.execute("timeline.isolateTrackLock", json!({"track": "V9"})).is_err());
+    assert!(s.execute("timeline.isolateTargeting", json!({"track": "A9"})).is_err());
+    assert_eq!(locked(&s), before);
+}

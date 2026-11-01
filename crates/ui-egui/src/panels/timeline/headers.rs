@@ -36,6 +36,7 @@ fn patch_button(ui: &mut egui::Ui, button: PatchButton<'_>) -> egui::Response {
 
 /// Draw only the visible track headers, including colour label, targeting, lock and header controls clipped to each row.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::cognitive_complexity)]
 pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows: &[Row], rect: Rect, vclip: Rect, aclip: Rect, t: &Tokens) {
     let hw = app.ui.timeline.header_w;
     let tg = app.session.targeting();
@@ -133,7 +134,15 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         );
         app.auto.add(&format!("timeline.track.{label}.locked"), lock_r, "Toggle Track Lock");
         if lresp.clicked() {
-            actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "locked": !tr.locked})));
+            // Alt isolates the lock (solo), and a second Alt-click inverts it: every other track
+            // locked, this one unlocked.
+            if ui.input(|i| i.modifiers.alt) {
+                let others_locked = seq.video_tracks.iter().chain(seq.audio_tracks.iter()).any(|t| t.id != r.track && t.locked);
+                let soloed = tr.locked && !others_locked;
+                actions.push(("timeline.isolateTrackLock".into(), json!({"track": r.track.0, "invert": soloed})));
+            } else {
+                actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "locked": !tr.locked})));
+            }
         }
         if tr.locked {
             // diagonal hatch over locked lanes is drawn by the lane painter; here a subtle tint
@@ -143,7 +152,7 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         let targeted = tg.targeted.contains(&r.track);
         let trr = btn_rect(61.0);
         app.auto.add(&format!("timeline.track.{label}.target"), trr, "Toggle track targeting");
-        if patch_button(
+        let target_resp = patch_button(
             ui,
             PatchButton {
                 rect: trr,
@@ -154,10 +163,17 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
                 id: egui::Id::unique(("target", r.track.0)),
                 tokens: t,
             },
-        )
-        .clicked()
-        {
-            actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "targeted": !targeted})));
+        );
+        if target_resp.clicked() {
+            // Alt isolates the targeting (solo), a second Alt-click inverts it.
+            if ui.input(|i| i.modifiers.alt) {
+                let others_targeted =
+                    seq.video_tracks.iter().chain(seq.audio_tracks.iter()).any(|t| t.id != r.track && tg.targeted.contains(&t.id));
+                let soloed = targeted && !others_targeted;
+                actions.push(("timeline.isolateTargeting".into(), json!({"track": r.track.0, "invert": soloed})));
+            } else {
+                actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "targeted": !targeted})));
+            }
         }
         // 4. upper line icons
         header_line_buttons(app, ui, seq, r, tr, visible, hrect, &label, t, &mut actions, &mut vo_action);
