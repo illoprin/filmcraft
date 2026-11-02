@@ -404,7 +404,27 @@ pub fn process(item: &TrackItem, a0: i64, n: usize, sr: u32, read: &dyn Fn(i64, 
 mod tests {
     use super::*;
     use filmcraft_audio_dsp::Unit;
-    use filmcraft_project::{EffectKind, ParamKind, effect_defs};
+    use filmcraft_project::{EffectKind, ParamKind, ParamValue, effect_defs};
+
+    /// The Gate maps its controls onto the noise-gate DSP and its inverse swaps the curve.
+    #[test]
+    fn gate_maps_its_parameters_and_inverts() {
+        let def = filmcraft_project::find_effect("gate").unwrap();
+        let mut inst = def.instance();
+        inst.param_mut("threshold").unwrap().value = ParamValue::Float(-30.0);
+        inst.param_mut("floor").unwrap().value = ParamValue::Float(-40.0);
+        let fx = configured(&inst, Tick::ZERO, 48000).unwrap();
+        // Below the threshold is attenuated by the floor; above it passes.
+        assert!((fx.transfer_db(0, -60.0).unwrap() + 40.0).abs() < 1e-3);
+        assert!(fx.transfer_db(0, -6.0).unwrap().abs() < 1e-3);
+        inst.param_mut("inverse").unwrap().value = ParamValue::Bool(true);
+        let fx = configured(&inst, Tick::ZERO, 48000).unwrap();
+        assert!(fx.transfer_db(0, -60.0).unwrap().abs() < 1e-3);
+        assert!((fx.transfer_db(0, -6.0).unwrap() + 40.0).abs() < 1e-3);
+        // The sidechain band and gain are real DSP parameters.
+        assert_eq!(latency("gate", 48000), 0);
+        assert!(filmcraft_audio_dsp::create_effect("noise_gate", 48000.0, 2).is_some());
+    }
 
     #[test]
     fn every_audio_effect_has_dsp() {
