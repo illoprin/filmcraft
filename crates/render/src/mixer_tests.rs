@@ -749,3 +749,30 @@ fn a_nest_trimmed_in_starts_later_in_its_sequence() {
     let mix = mix_graph(&p, p.sequence(outer).unwrap(), start, 4800, &map, None);
     assert!(worst(&mix, start, 8, |t| tone.at(t + 3.0)) < 0.01);
 }
+
+/// The Spectrum Analyzer tap keeps the newest mono master frames, oldest first.
+#[test]
+fn master_tap_keeps_the_newest_mono_frames() {
+    let live = LiveMix::new();
+    live.post_master(&[vec![1.0, 2.0, 3.0], vec![3.0, 2.0, 1.0]]);
+    let mut out = [0.0f32; 3];
+    assert!(live.master_snapshot(&mut out));
+    assert_eq!(out, [2.0, 2.0, 2.0], "(L+R)/2 per frame");
+    // A new block: the snapshot takes the newest frames, oldest first.
+    live.post_master(&[vec![10.0, 20.0], vec![10.0, 20.0]]);
+    let mut out = [0.0f32; 2];
+    assert!(live.master_snapshot(&mut out));
+    assert_eq!(out, [10.0, 20.0]);
+    // A snapshot longer than the history is front-padded with silence.
+    let mut out = [9.0f32; 6];
+    assert!(live.master_snapshot(&mut out));
+    assert_eq!(out, [0.0, 2.0, 2.0, 2.0, 10.0, 20.0]);
+    // A mono master duplicates to mono, and hostile samples become silence.
+    let live = LiveMix::new();
+    live.post_master(&[vec![0.5, f32::NAN, -0.5]]);
+    let mut out = [0.0f32; 3];
+    live.master_snapshot(&mut out);
+    assert_eq!(out, [0.5, 0.0, -0.5]);
+    // Nothing captured yet.
+    assert!(!LiveMix::new().master_snapshot(&mut []));
+}

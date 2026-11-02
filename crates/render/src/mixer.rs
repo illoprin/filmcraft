@@ -82,6 +82,54 @@ pub struct LiveMix {
     /// Peak levels of the recording input (voice-over), per input channel.
     input_meter: Mutex<Vec<f32>>,
     project: Mutex<Option<Arc<Project>>>,
+    /// Newest master (Mix) output samples, mono, for the Spectrum Analyzer panel.
+    master: Mutex<MasterTap>,
+}
+
+/// How many mono master frames the Spectrum Analyzer can look back at (a few FFT windows).
+const MASTER_TAP_FRAMES: usize = 32768;
+
+/// A rolling window of the most recent master output, downmixed to mono. Written by the playback
+/// mixing thread (or whatever renders the Mix) and read (never drained) by the analyzer panel.
+#[derive(Default)]
+struct MasterTap {
+    buf: Vec<f32>,
+    pos: usize,
+    len: usize,
+}
+
+impl MasterTap {
+    /// Append the master bus `channels` (2 or 6; the first two are summed to mono).
+    fn push(&mut self, channels: &[Vec<f32>]) {
+        let n = channels.first().map_or(0, Vec::len);
+        if self.buf.len() < MASTER_TAP_FRAMES {
+            self.buf.resize(MASTER_TAP_FRAMES, 0.0);
+        }
+        let cap = self.buf.len().max(1);
+        for i in 0..n {
+            let l = channels[0].get(i).copied().unwrap_or(0.0);
+            let r = channels.get(1).and_then(|c| c.get(i)).copied().unwrap_or(l);
+            self.buf[self.pos] = if (l + r).is_finite() { (l + r) * 0.5 } else { 0.0 };
+            self.pos = (self.pos + 1) % cap;
+        }
+        self.len = (self.len + n).min(cap);
+    }
+
+    /// Copy the most recent `out.len()` frames into `out`, oldest first (leading silence while the
+    /// tap has not filled yet). Returns false when nothing has been captured.
+    fn snapshot(&self, out: &mut [f32]) -> bool {
+        let cap = self.buf.len();
+        if cap == 0 || self.len == 0 {
+            return false;
+        }
+        let want = out.len().min(self.len);
+        let start = (self.pos + cap - want) % cap;
+        let pad = out.len() - want;
+        for (k, o) in out.iter_mut().enumerate() {
+            *o = if k >= pad { self.buf[(start + (k - pad)) % cap] } else { 0.0 };
+        }
+        true
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -164,6 +212,15 @@ impl LiveMix {
     }
     pub fn project(&self) -> Option<Arc<Project>> {
         lock(&self.project).clone()
+    }
+    /// Feed the master (Mix) output to the Spectrum Analyzer. Called from the playback mix path
+    /// with the post-Master-effects bus.
+    pub fn post_master(&self, channels: &[Vec<f32>]) {
+        lock(&self.master).push(channels);
+    }
+    /// Copy the most recent mono master frames into `out` (oldest first) for the analyzer panel.
+    pub fn master_snapshot(&self, out: &mut [f32]) -> bool {
+        lock(&self.master).snapshot(out)
     }
 }
 
