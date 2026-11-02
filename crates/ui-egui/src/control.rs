@@ -446,14 +446,19 @@ fn handle_synthetic_input(app: &mut FilmcraftApp, p: &Value, method: &str) -> Ou
                 Err(error) => return err(error),
             };
             let m = modifiers(p);
+            let button = match s("button") {
+                Some("middle") => egui::PointerButton::Middle,
+                Some("right") => egui::PointerButton::Secondary,
+                _ => egui::PointerButton::Primary,
+            };
             app.synthetic.push(egui::Event::ModifiersChanged(m));
             app.synthetic.push(egui::Event::PointerMoved(a));
-            app.synthetic.push(egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: m });
+            app.synthetic.push(egui::Event::PointerButton { pos: a, button, pressed: true, modifiers: m });
             for i in 1..=steps {
                 let f = i as f32 / steps as f32;
                 app.synthetic.push(egui::Event::PointerMoved(a + (b - a) * f));
             }
-            app.synthetic.push(egui::Event::PointerButton { pos: b, button: egui::PointerButton::Primary, pressed: false, modifiers: m });
+            app.synthetic.push(egui::Event::PointerButton { pos: b, button, pressed: false, modifiers: m });
             app.synthetic.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
             Outcome::AfterInput
         }

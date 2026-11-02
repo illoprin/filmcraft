@@ -118,7 +118,7 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, duration:
         next = Some((start, start + span));
     }
     let drag_id = egui::Id::unique("effect-controls-zoom-drag");
-    if response.drag_started()
+    if response.drag_started_by(egui::PointerButton::Primary)
         && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos())
     {
         let mut drag_start = start;
@@ -137,7 +137,7 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, duration:
         };
         ui.data_mut(|d| d.insert_temp(drag_id, (pos.x, drag_start, mode)));
     }
-    if response.dragged()
+    if response.dragged_by(egui::PointerButton::Primary)
         && let Some((grab, drag_start, mode)) = ui.data(|d| d.get_temp::<(f32, f64, u8)>(drag_id))
     {
         match mode {
@@ -265,6 +265,98 @@ fn zoom_at_playhead(
     let new_span = (span * factor).clamp(min_span, 1.0);
     let new_start = (anchor - cursor_x * new_span).clamp(0.0, 1.0 - new_span);
     app.ui.effect_controls_time_zoom = (new_start > 0.0 || new_start + new_span < 1.0).then_some([new_start, new_start + new_span]);
+    true
+}
+
+/// UI-data key: whether a middle-button pan of Effect Controls is under way. Set while the button
+/// is held after it went down over the panel, so the gesture keeps panning even off the panel.
+fn pan_id() -> egui::Id {
+    egui::Id::unique("effect-controls-pan")
+}
+
+/// Shift a zoom range sideways by a content movement of `dx` points, keeping its width. A positive
+/// `dx` moves the content right (a drag to the right or a wheel turning "down"), revealing earlier
+/// time, as the Timeline's sideways scroll does. A full-clip range has nothing to reveal.
+fn pan_time_zoom(zoom: Option<[f64; 2]>, dx: f32, lane_w: f32) -> Option<[f64; 2]> {
+    let (start, end) = time_zoom_range(zoom);
+    let span = end - start;
+    if !dx.is_finite() || lane_w <= 0.0 || span >= 1.0 {
+        return zoom;
+    }
+    let shift = -f64::from(dx) / f64::from(lane_w) * span;
+    let start = (start + shift).clamp(0.0, 1.0 - span);
+    let end = start + span;
+    (start > 0.0 || end < 1.0).then_some([start, end])
+}
+
+/// A middle-button drag pans Effect Controls: the keyframe lane's time window sideways and the
+/// effect rows vertically (as the Timeline's middle drag pans it, #824 / #1490). Returns the
+/// vertical content delta, in points, for the rows' `ScrollArea` to apply.
+fn pan_at_pointer(app: &mut FilmcraftApp, ui: &egui::Ui, rect: Rect, lane: Rect) -> f32 {
+    let (hovering, pressed, down, delta) = ui.input(|i| {
+        (
+            i.pointer.hover_pos().is_some_and(|p| rect.contains(p)),
+            i.pointer.button_pressed(egui::PointerButton::Middle),
+            i.pointer.middle_down(),
+            i.pointer.delta(),
+        )
+    });
+    let mut active = ui.data(|d| d.get_temp::<bool>(pan_id()).unwrap_or(false));
+    if pressed && hovering {
+        active = true;
+    }
+    if !down || !active {
+        ui.data_mut(|d| d.remove::<bool>(pan_id()));
+        return 0.0;
+    }
+    ui.data_mut(|d| d.insert_temp(pan_id(), true));
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    if delta.x.is_finite() && delta.x != 0.0 {
+        app.ui.effect_controls_time_zoom = pan_time_zoom(app.ui.effect_controls_time_zoom, delta.x, lane.width());
+    }
+    if delta.y.is_finite() { delta.y } else { 0.0 }
+}
+
+/// Shift + wheel (or a horizontal wheel) pans the keyframe lane sideways, as it scrolls the
+/// Timeline sideways. The gesture is consumed so no other view acts on it.
+fn wheel_pan(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect) -> bool {
+    if !ui.input(|i| i.pointer.hover_pos().is_some_and(|p| lane.contains(p))) {
+        return false;
+    }
+    let delta = ui.input(|input| {
+        let mut delta = 0.0f32;
+        for event in &input.events {
+            if let egui::Event::MouseWheel { unit, delta: d, modifiers, .. } = event
+                && !modifiers.alt
+                && !modifiers.command
+                && !modifiers.ctrl
+                && d.x.is_finite()
+                && d.y.is_finite()
+            {
+                let points = wheel_points(*unit);
+                if d.x.abs() > d.y.abs() {
+                    delta += d.x * points;
+                } else if modifiers.shift {
+                    delta += d.y * points;
+                }
+            }
+        }
+        delta
+    });
+    if delta == 0.0 {
+        return false;
+    }
+    // Consume the sideways gesture: it belongs to the lane's time view, not the rows' ScrollArea.
+    ui.input_mut(|input| {
+        input.events.retain(
+            |event| !matches!(event, egui::Event::MouseWheel { delta, modifiers, .. } if !modifiers.alt && (modifiers.shift || delta.x.abs() > delta.y.abs())),
+        );
+        input.raw.events.retain(
+            |event| !matches!(event, egui::Event::MouseWheel { delta, modifiers, .. } if !modifiers.alt && (modifiers.shift || delta.x.abs() > delta.y.abs())),
+        );
+        input.smooth_scroll_delta.x = 0.0;
+    });
+    app.ui.effect_controls_time_zoom = pan_time_zoom(app.ui.effect_controls_time_zoom, delta, lane.width());
     true
 }
 
@@ -797,6 +889,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let rate = seq.settings.frame_rate;
     app.ui.effect_controls_time_zoom = constrained_time_zoom(app.ui.effect_controls_time_zoom, it.duration, rate);
     let zooming_at_pointer = zoom_at_playhead(app, ui, lane, it.start, it.duration, ph, rate);
+    // middle-button drag pans both axes; Shift + wheel (or a horizontal wheel) pans the time view
+    let pan_dy = pan_at_pointer(app, ui, rect, lane);
+    let wheel_panning = wheel_pan(app, ui, lane);
     let (shown_start, shown_end) = shown_range(it.start, it.duration, app.ui.effect_controls_time_zoom);
     let shown_duration = shown_end.0.saturating_sub(shown_start.0).max(1) as f64;
     let lx = |tk: Tick| -> f32 { lane.min.x + (((tk.0.saturating_sub(shown_start.0) as f64 / shown_duration) as f32).clamp(0.0, 1.0)) * lane.width() };
@@ -829,8 +924,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // scrollbar sits at the panel's right edge (#643)
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(body.min, pos2(lane.max.x, body.max.y))).id_salt("ec-body"));
     bui.set_clip_rect(Rect::from_min_max(body.min, pos2(rect.max.x, body.max.y)));
-    let scroll_source = egui::scroll_area::ScrollSource { mouse_wheel: !zooming_at_pointer, ..Default::default() };
+    let scroll_source = egui::scroll_area::ScrollSource { mouse_wheel: !(zooming_at_pointer || wheel_panning), ..Default::default() };
     let scroll_out = egui::ScrollArea::vertical().id_salt("ec-scroll").auto_shrink([false, false]).scroll_source(scroll_source).show(&mut bui, |bui| {
+        // A middle-button pan moves the rows with the pointer (through the pass-state scroll delta,
+        // which the ScrollArea applies after this closure), so it does not fight its own physics.
+        if pan_dy != 0.0 {
+            bui.scroll_with_delta_animation(vec2(0.0, pan_dy), egui::style::ScrollAnimation::none());
+        }
         for (clip, it, kind) in &clips {
             let clip = *clip;
             let (hr, _) = bui.allocate_exact_size(vec2(body.width(), 18.0), Sense::hover());
@@ -936,7 +1036,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                     actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": idx})));
                 }
-                if resp.drag_started() && !def.intrinsic {
+                if resp.drag_started_by(egui::PointerButton::Primary) && !def.intrinsic {
                     effect_drag = Some(EffectDrag { clip: clip.0, from: idx, target: Some(idx), name: crate::i18n::t(def.name).to_owned() });
                     bui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 }
@@ -1119,7 +1219,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // click or drag anywhere on the ruler (or the bar) to move the playhead (after the rows, which
     // reach under it, so it gets the pointer first)
     let sresp = ui.interact(scrub, egui::Id::unique(("ec-scrub", clip.0)), Sense::click_and_drag());
-    if (sresp.dragged() || sresp.clicked())
+    if (sresp.dragged_by(egui::PointerButton::Primary) || sresp.clicked())
         && let Some(pos) = sresp.interact_pointer_pos()
     {
         let f = ((pos.x - lane.min.x) / lane.width()).clamp(0.0, 1.0) as f64;
@@ -1130,14 +1230,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // the divider: a line the height of the panel, a resize cursor and a wider grab area
     let divider = Rect::from_min_max(pos2(split - 2.0, rect.min.y), pos2(split + 4.0, rect.max.y - 26.0));
     let dresp = ui.interact(divider, egui::Id::unique("ec-divider"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-    if dresp.dragged() {
+    if dresp.dragged_by(egui::PointerButton::Primary) {
         app.ui.effect_controls_split = if panel_width >= MIN_LIST_W + MIN_LANE_W + 10.0 {
             (list_w + dresp.drag_delta().x).clamp(MIN_LIST_W, max_list)
         } else {
             (list_w + dresp.drag_delta().x).clamp(0.0, panel_width)
         };
     }
-    let dcol = if dresp.hovered() || dresp.dragged() { t.accent } else { t.separator };
+    let dcol = if dresp.hovered() || dresp.dragged_by(egui::PointerButton::Primary) { t.accent } else { t.separator };
     ui.painter().line_segment([pos2(split + 1.5, rect.min.y), pos2(split + 1.5, rect.max.y - 26.0)], Stroke::new(1.0, dcol));
     app.auto.add("effectControls.divider", divider, "divider");
     // playhead: a handle on the ruler and a line down the lane, while it is on the clip
