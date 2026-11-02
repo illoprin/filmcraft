@@ -152,6 +152,10 @@ pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
     let Some(row) = layout.row_at(pos.y) else { return Hit::None };
     let Some(tr) = seq.track(row.track) else { return Hit::None };
     for trn in &tr.transitions {
+        // a one-sided audio fade is the clip's fade handle ramp, not a selectable transition box
+        if super::timeline_fade::is_fade_transition(trn) {
+            continue;
+        }
         let x0 = layout.x_of(trn.start);
         let x1 = layout.x_of(trn.end());
         if pos.x >= x0 && pos.x <= x1 && pos.y > transition_top(row.rect) {

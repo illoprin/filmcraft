@@ -67,6 +67,12 @@ fn y_of(body: Rect, db: f64) -> f32 {
     b.max.y - db_to_pos(db) * b.height()
 }
 
+/// The y of an audio clip's Volume line at timeline time `t`, so a fade ramp can meet it (the
+/// Timeline fade handles: the ramp's flat end sits on the volume line, as in Reaper / Vegas).
+pub fn line_y(body: Rect, it: &TrackItem, t: Tick) -> f32 {
+    y_of(body, level_at(it, t))
+}
+
 /// The line from `x0` to `x1`; keyframes bend it, so it then gets a point every 2 px.
 fn line(it: &TrackItem, body: Rect, x0: f32, x1: f32) -> Vec<Pos2> {
     let n = if level(it).is_some_and(Param::is_animated) { (((x1 - x0) / 2.0).ceil() as usize).clamp(1, 4096) } else { 1 };
