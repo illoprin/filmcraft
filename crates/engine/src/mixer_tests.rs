@@ -46,9 +46,11 @@ fn every_mixer_command_is_registered_with_a_label() {
         "mixer.moveInsert",
         "mixer.copyInserts",
         "mixer.pasteInserts",
+        "mixer.clearInserts",
         "mixer.listPresets",
         "mixer.savePreset",
         "mixer.applyPreset",
+        "mixer.deletePreset",
         "mixer.addSend",
         "mixer.setSend",
         "mixer.removeSend",
@@ -768,4 +770,27 @@ fn save_and_apply_track_presets() {
     let r = s.execute("mixer.applyPreset", json!({"strip": "A2", "preset": "Dialogue"})).unwrap();
     assert_eq!(r, json!({"applied": 1, "dropped": 1}));
     assert_eq!(s.active_sequence().unwrap().audio_tracks[1].effects.len(), 5);
+}
+
+/// Deleting every effect on a track (`mixer.clearInserts`) and deleting a saved preset
+/// (`mixer.deletePreset`).
+#[test]
+fn clear_all_track_effects_and_delete_a_track_preset() {
+    let mut s = demo();
+    for e in ["amplify", "dynamics"] {
+        s.execute("mixer.addInsert", json!({"strip": "A1", "effect": e})).unwrap();
+    }
+    let r = s.execute("mixer.clearInserts", json!({"strip": "A1"})).unwrap();
+    assert_eq!(r, json!({"removed": 2}));
+    assert!(a1(&s).effects.is_empty());
+    // nothing left to delete, and one undo step brings the chain back
+    assert!(s.execute("mixer.clearInserts", json!({"strip": "A1"})).is_err());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(a1(&s).effects.len(), 2);
+    // presets: save, then delete
+    s.execute("mixer.savePreset", json!({"strip": "A1", "name": "ToDelete", "description": "gone soon"})).unwrap();
+    assert_eq!(s.track_presets.user.len(), 1);
+    assert_eq!(s.execute("mixer.deletePreset", json!({"name": "ToDelete"})).unwrap(), Value::Null);
+    assert!(s.track_presets.user.is_empty());
+    assert!(s.execute("mixer.deletePreset", json!({"name": "ToDelete"})).is_err());
 }

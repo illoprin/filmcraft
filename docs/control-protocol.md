@@ -111,17 +111,18 @@ solo, record arm, solo safe, mode Off/Read/Latch/Touch/Write, output, input map,
 `mixer.recordStart` / `mixer.recordStop` (playback runs them), `mixer.addSubmix`, `mixer.deleteSubmix`,
 `mixer.addInsert` / `removeInsert` / `setInsert`, `mixer.moveInsert`, `mixer.copyInserts` /
 `mixer.pasteInserts` (copy a strip's whole insert chain to the one application clipboard and append
-it to another strip, keeping only the effects that fit its free slots), `mixer.addSend` / `setSend` /
+it to another strip, keeping only the effects that fit its free slots), `mixer.clearInserts` (empty a
+strip's insert chain), `mixer.addSend` / `setSend` /
 `removeSend`, `mixer.setKeyframe` / `deleteKeyframe` / `moveKeyframe` / `clearLane`,
 `mixer.writeAutomation`, and track effect presets: `mixer.listPresets`, `mixer.savePreset`
-`{strip, name, description?}`, `mixer.applyPreset {strip, preset}` (a separate library, persisted in
+`{strip, name, description?}`, `mixer.applyPreset {strip, preset}`, `mixer.deletePreset {name}` (a separate library, persisted in
 `track-effect-presets.json`);
 `clipMixer.set`; `clip.audioGain {clips?, mode: set|adjust|normalizeMax|normalizeAll, db}`, `clip.audioPeak`;
 `effects.setDefaultTransition`. UI ids: `mixer.<A1|S1|Mix>.<fader|value|pan|panValue|mode|mute|solo|
 record|soloSafe|output|input|fx.<n>|send.<n>|meter|name>` (popup entries below them, e.g.
 `mixer.A1.mode.Touch`, `mixer.A1.fx.0.studio_reverb`), `mixer.showEffects`, `mixer.copyEffects`,
-`mixer.pasteEffects`, `mixer.savePreset`, `mixer.applyPreset`, `mixerPresetSave.<name|description|ok|cancel>`,
-`mixerPresetApply.<preset.<name>|ok|cancel>`, `mixer.transport.<cmd>`,
+`mixer.pasteEffects`, `mixer.clearEffects`, `mixer.savePreset`, `mixer.applyPreset`, `mixerPresetSave.<name|description|ok|cancel>`,
+`mixerPresetApply.<preset.<name>|delete|ok|cancel>`, `mixer.transport.<cmd>`,
 `clipMixer.A1.<fader|pan|mute|solo|keyframe|value>`, `timeline.track.A1.keyframes[.<lane>|.clip]`,
 `timeline.track.A1.lane[.kf.<n>]`, `audioGain.<set|adjust|normalizeMax|normalizeAll|ok|cancel|peak>`.
 
