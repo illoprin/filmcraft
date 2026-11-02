@@ -52,7 +52,10 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
         use filmcraft_audio_dsp::channels::Layout;
         let layout = if ch >= 6 && seq.settings.audio_master == filmcraft_project::AudioChannels::Surround51 { Layout::Surround51 } else { Layout::Stereo };
         let mix = if seq_sr == sr {
-            previews.mix_layout(&project, seq_id, cursor, n, &provider, filmcraft_engine::previews::MixOutput { layout, mixdown })
+            let b = previews.mix_layout(&project, seq_id, cursor, n, &provider, filmcraft_engine::previews::MixOutput { layout, mixdown });
+            // The Spectrum Analyzer sees the master bus (post Master effects) at the sequence rate.
+            previews.live.post_master(&b.channels);
+            b
         } else {
             // Mix at the sequence rate as one continuous stream, interpolated to the device rate
             // (started afresh when the rate or the channel layout changes while playing).
@@ -65,7 +68,10 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
                 return;
             };
             let channels = r.process(cursor, n, |s0, m| {
-                previews.mix_layout(&project, seq_id, s0, m, &provider, filmcraft_engine::previews::MixOutput { layout, mixdown }).channels
+                let b = previews.mix_layout(&project, seq_id, s0, m, &provider, filmcraft_engine::previews::MixOutput { layout, mixdown });
+                // Tap the sequence-rate master, before the device-rate resampling.
+                previews.live.post_master(&b.channels);
+                b.channels
             });
             filmcraft_frame::AudioBuffer { sample_rate: sr, channels }
         };

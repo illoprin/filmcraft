@@ -14,9 +14,38 @@ pub struct PanelsState {
     pub reference: ReferenceState,
     pub events: EventsState,
     pub progress: ProgressState,
+    /// Spectrum Analyzer settings (the panel's toolbar).
+    pub spectrum: SpectrumState,
     /// Preferred selection for Metadata and Info; inspector focus does not replace it.
     pub inspector_source: InspectorSource,
 }
+
+/// Spectrum Analyzer settings (the panel toolbar / right-click menu).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SpectrumState {
+    /// Spectral tilt in dB per octave (SPAN's Slope), 0..6.
+    pub slope: f32,
+    /// Fall speed once a bin's signal stops, in dB per second.
+    pub decay: f32,
+    /// Fractional-octave smoothing width in octaves (0 = off, 1/3, 1/6, 1/12, 1/24).
+    pub smooth_octaves: f32,
+    /// Draw and hold the peak line.
+    pub peak_hold: bool,
+    /// Fall speed of the held peak, in dB per second.
+    pub peak_decay: f32,
+    /// Floor of the dB scale (negative).
+    pub min_db: f32,
+}
+
+impl Default for SpectrumState {
+    fn default() -> Self {
+        SpectrumState { slope: 4.5, decay: 60.0, smooth_octaves: 1.0 / 3.0, peak_hold: true, peak_decay: 3.0, min_db: -90.0 }
+    }
+}
+
+/// The fractional-octave smoothing choices shown in the toolbar (label, octave width).
+pub const SPECTRUM_SMOOTHING: [(&str, f32); 5] = [("Off", 0.0), ("1/3 oct", 1.0 / 3.0), ("1/6 oct", 1.0 / 6.0), ("1/12 oct", 1.0 / 12.0), ("1/24 oct", 1.0 / 24.0)];
 
 /// The last selection panel used by the item inspectors. Only the source is retained, so
 /// project changes, deletion and deselection always resolve against the current selection.
