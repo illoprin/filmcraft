@@ -18,7 +18,7 @@ pub(crate) mod util;
 
 pub use channel::{Amplify, Balance, ChannelVolume, Invert, Route, Routing};
 pub use declick::ClickRemover;
-pub use dynamics::{Compressor, Gate, Limiter};
+pub use dynamics::{Compressor, Gate, Limiter, NoiseGate};
 pub use eq::{ParametricEq, SimpleEq};
 pub use essential::{DeEsser, DeReverb, SpeechEnhance, StereoWidth};
 pub use filters::{FftFilter, FullParametricEq, GraphicEq, NotchFilter, ScientificFilter};
@@ -79,6 +79,7 @@ static REGISTRY: &[EffectInfo] = &[
     entry!("simple_eq", "Simple 3-Band EQ", Filter, SimpleEq),
     entry!("compressor", "Compressor", Dynamics, Compressor),
     entry!("gate", "Expander / Gate", Dynamics, Gate),
+    entry!("noise_gate", "Gate", Dynamics, NoiseGate),
     entry!("limiter", "Hard Limiter", Dynamics, Limiter),
     entry!("delay", "Delay", Time, Delay),
     entry!("reverb", "Reverb", Time, Reverb),

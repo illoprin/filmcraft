@@ -4,9 +4,11 @@
 //! not shift. Gain computers work in dB; attack/release are one-pole smoothers on the gain.
 
 use super::util::{coef, lin_db};
+use crate::biquad::{Biquad, Coeffs, FilterType};
 use crate::oversample::{Interpolator, PolyphaseBank, true_peak_factor};
 use crate::{AudioEffect, ParamSpec, ParamValues, Smoothed, Unit, block_len, db_to_gain, param_plumbing};
 use std::collections::VecDeque;
+use std::f64::consts::FRAC_1_SQRT_2;
 
 /// Static compressor curve with a quadratic soft knee (output level in dB for input level `x`).
 pub fn compressor_curve(x: f32, threshold: f32, ratio: f32, knee: f32) -> f32 {
@@ -230,6 +232,142 @@ impl AudioEffect for Gate {
                 self.env = self.rel * self.env + (1.0 - self.rel) * target;
             }
             let g = db_to_gain(self.env);
+            for ch in channels.iter_mut() {
+                ch[i] *= g;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+
+/// Noise gate with a sidechain detection filter, hold, an attenuation floor and make-up gain.
+///
+/// The detector is stereo-linked (the loudest channel drives one common gain) and optionally
+/// band-limited by the sidechain high-pass / low-pass, so only the chosen range opens the gate.
+/// When closed the signal is attenuated by `floor` dB; `inverse` swaps open and closed so the
+/// removed part is heard instead.
+pub struct NoiseGate {
+    pv: ParamValues,
+    sr: f32,
+    threshold: f32,
+    floor_db: f32,
+    inverse: bool,
+    att: f32,
+    rel: f32,
+    hold: u32,
+    hold_left: u32,
+    gain: Smoothed,
+    /// Per-channel sidechain detection filters.
+    hp: Vec<Biquad>,
+    lp: Vec<Biquad>,
+    hp_c: Coeffs,
+    lp_c: Coeffs,
+    /// Smoothed gate gain in dB (≤ 0, 0 = fully open).
+    env: f32,
+}
+
+impl NoiseGate {
+    pub const PARAMS: &'static [ParamSpec] = &[
+        ParamSpec::new("threshold", "Threshold", -80.0, 0.0, -40.0, Unit::Decibels),
+        ParamSpec::log("attack", "Attack", 0.1, 500.0, 1.0, Unit::Milliseconds),
+        ParamSpec::log("release", "Release", 1.0, 5000.0, 150.0, Unit::Milliseconds),
+        ParamSpec::new("hold", "Hold", 0.0, 2000.0, 50.0, Unit::Milliseconds),
+        ParamSpec::new("floor", "Floor", -99.0, 0.0, -60.0, Unit::Decibels),
+        ParamSpec::new("gain", "Gain", -24.0, 24.0, 0.0, Unit::Decibels),
+        ParamSpec::log("sc_hp", "Sidechain Highpass", 20.0, 20000.0, 20.0, Unit::Hertz),
+        ParamSpec::log("sc_lp", "Sidechain Lowpass", 20.0, 20000.0, 20000.0, Unit::Hertz),
+        ParamSpec::toggle("inverse", "Inverse", false),
+    ];
+
+    pub fn new(sample_rate: f32, channels: usize) -> Self {
+        let ch = channels.max(1);
+        let mut s = NoiseGate {
+            pv: ParamValues::new(Self::PARAMS),
+            sr: sample_rate,
+            threshold: 0.0,
+            floor_db: 0.0,
+            inverse: false,
+            att: 0.0,
+            rel: 0.0,
+            hold: 0,
+            hold_left: 0,
+            gain: Smoothed::with_ms(1.0, sample_rate, 20.0),
+            hp: vec![Biquad::new(); ch],
+            lp: vec![Biquad::new(); ch],
+            hp_c: Coeffs::IDENTITY,
+            lp_c: Coeffs::IDENTITY,
+            env: 0.0,
+        };
+        s.apply_params(true);
+        s
+    }
+
+    fn apply_params(&mut self, snap: bool) {
+        self.threshold = self.pv.v("threshold");
+        self.floor_db = self.pv.v("floor");
+        self.inverse = self.pv.on("inverse");
+        self.att = coef(self.pv.v("attack"), self.sr);
+        self.rel = coef(self.pv.v("release"), self.sr);
+        self.hold = (self.pv.v("hold") * 0.001 * self.sr) as u32;
+        self.gain.set(db_to_gain(self.pv.v("gain")));
+        let q = FRAC_1_SQRT_2;
+        self.hp_c = Coeffs::design(FilterType::HighPass, self.sr as f64, self.pv.v("sc_hp") as f64, q, 0.0);
+        self.lp_c = Coeffs::design(FilterType::LowPass, self.sr as f64, self.pv.v("sc_lp") as f64, q, 0.0);
+        if snap {
+            self.gain.snap();
+        }
+    }
+
+    /// Static gate curve (dB gain for an input level), for the graphical editor.
+    pub fn curve(&self, input_db: f32) -> f32 {
+        let open = input_db >= self.threshold;
+        let g = if open != self.inverse { 0.0 } else { self.floor_db };
+        g + self.pv.v("gain")
+    }
+}
+
+impl AudioEffect for NoiseGate {
+    param_plumbing!("noise_gate");
+    fn transfer_db(&self, band: usize, input_db: f32) -> Option<f32> {
+        (band == 0).then(|| self.curve(input_db))
+    }
+    fn reset(&mut self) {
+        self.env = 0.0;
+        self.hold_left = 0;
+        self.hp.iter_mut().for_each(Biquad::reset);
+        self.lp.iter_mut().for_each(Biquad::reset);
+        self.gain.snap();
+    }
+    fn process(&mut self, channels: &mut [&mut [f32]]) {
+        let n = block_len(channels);
+        let nch = channels.len().min(self.hp.len());
+        for i in 0..n {
+            // Stereo-linked detector, optionally band-limited by the sidechain filters.
+            let mut peak = 0.0f32;
+            for ch in 0..nch {
+                let hp = self.hp[ch].tick(&self.hp_c, channels[ch][i] as f64);
+                let lp = self.lp[ch].tick(&self.lp_c, hp);
+                peak = peak.max(lp.abs() as f32);
+            }
+            let level = lin_db(peak);
+            let target = if level >= self.threshold { 0.0 } else { self.floor_db };
+            if target >= self.env {
+                // Opening (or staying open): attack.
+                self.env = self.att * self.env + (1.0 - self.att) * target;
+                if target >= 0.0 {
+                    self.hold_left = self.hold;
+                }
+            } else if self.hold_left > 0 {
+                self.hold_left -= 1;
+            } else {
+                self.env = self.rel * self.env + (1.0 - self.rel) * target;
+            }
+            if self.env.abs() < 1e-9 {
+                self.env = 0.0;
+            }
+            let applied = if self.inverse { self.floor_db - self.env } else { self.env };
+            let g = db_to_gain(applied) * self.gain.tick();
             for ch in channels.iter_mut() {
                 ch[i] *= g;
             }
@@ -493,6 +631,86 @@ mod tests {
         // Well after hold + release: attenuated by the full range.
         assert!((lin_db(x[47999]) + 90.0).abs() < 0.1, "{}", lin_db(x[47999]));
         assert!((expander_curve(-40.0, -30.0, 2.0, 60.0) + 50.0).abs() < 1e-6);
+    }
+
+    /// Static parameters of a [`NoiseGate`] used by the tests below.
+    fn gate_for_tests() -> NoiseGate {
+        let mut g = NoiseGate::new(SR, 1);
+        g.set_param("threshold", -30.0);
+        g.set_param("floor", -60.0);
+        g.set_param("attack", 0.1);
+        g.set_param("release", 1.0);
+        g.set_param("hold", 0.0);
+        g
+    }
+
+    /// dB gain the gate applies to a steady tone of `amp_db` at `freq`.
+    fn gate_tone_db(g: &mut NoiseGate, amp_db: f32, freq: f64) -> f64 {
+        let n = 48000;
+        let x = sine(freq, db_to_gain(amp_db) as f64, SR as f64, n, 0.0);
+        let mut y = x.clone();
+        g.reset();
+        g.process(&mut [&mut y]);
+        db(rms(&y[n / 2..]) / rms(&x[n / 2..]))
+    }
+
+    #[test]
+    fn noise_gate_opens_above_threshold_and_closes_to_floor() {
+        let mut g = gate_for_tests();
+        let open = gate_tone_db(&mut g, -6.0, 1000.0);
+        assert!(open.abs() < 0.5, "open {open}");
+        let closed = gate_tone_db(&mut g, -50.0, 1000.0);
+        assert!((closed + 60.0).abs() < 1.0, "closed {closed}");
+        // Gain lifts the open level.
+        g.set_param("gain", 6.0);
+        assert!((gate_tone_db(&mut g, -6.0, 1000.0) - 6.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn noise_gate_sidechain_filter_selects_the_detector_band() {
+        let mut g = gate_for_tests();
+        g.set_param("sc_hp", 2000.0);
+        g.set_param("sc_lp", 20000.0);
+        // A loud low tone is outside the detector band, so the gate stays closed.
+        let low = gate_tone_db(&mut g, -6.0, 100.0);
+        assert!((low + 60.0).abs() < 2.0, "low {low}");
+        // A loud in-band tone opens it.
+        let high = gate_tone_db(&mut g, -6.0, 8000.0);
+        assert!(high.abs() < 1.0, "high {high}");
+    }
+
+    #[test]
+    fn noise_gate_inverse_hears_the_removed_part() {
+        let mut g = gate_for_tests();
+        g.set_param("inverse", 1.0);
+        // Above threshold is now muted, below it passes.
+        assert!((gate_tone_db(&mut g, -6.0, 1000.0) + 60.0).abs() < 1.0);
+        assert!(gate_tone_db(&mut g, -50.0, 1000.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn noise_gate_hold_keeps_it_open_then_releases_to_floor() {
+        let mut g = NoiseGate::new(SR, 1);
+        g.set_param("threshold", -30.0);
+        g.set_param("floor", -60.0);
+        g.set_param("hold", 200.0);
+        g.set_param("release", 20.0);
+        let n = 48000;
+        let src: Vec<f32> = (0..n)
+            .map(|i| {
+                let amp = if i < 24000 { db_to_gain(-10.0) } else { db_to_gain(-50.0) } as f64;
+                (amp * (2.0 * std::f64::consts::PI * 1000.0 * i as f64 / SR as f64).sin()) as f32
+            })
+            .collect();
+        let mut y = src.clone();
+        g.process(&mut [&mut y]);
+        let w = |v: &[f32], a: usize, b: usize| db(rms(&v[a..b]));
+        // Loud: open, transparent.
+        assert!((w(&y, 20000, 23000) - w(&src, 20000, 23000)).abs() < 0.5);
+        // 200 ms hold after the signal drops: still open.
+        assert!((w(&y, 26000, 30000) - w(&src, 26000, 30000)).abs() < 0.5);
+        // After hold + release: attenuated by the floor.
+        assert!((w(&y, 46000, 47500) - w(&src, 46000, 47500) + 60.0).abs() < 1.0);
     }
 
     #[test]
