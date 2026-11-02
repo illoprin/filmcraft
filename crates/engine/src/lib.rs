@@ -1418,6 +1418,8 @@ mod animated_image_tests;
 #[cfg(test)]
 mod audio_effects_tests;
 #[cfg(test)]
+mod audio_fade_tests;
+#[cfg(test)]
 mod audio_placement_tests;
 #[cfg(test)]
 mod autosave_tests;
