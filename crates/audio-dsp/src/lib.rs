@@ -35,6 +35,7 @@ pub(crate) mod oversample;
 pub mod remix;
 pub mod resample;
 mod smooth;
+pub mod spectrum;
 pub mod stretch;
 pub mod sync;
 
