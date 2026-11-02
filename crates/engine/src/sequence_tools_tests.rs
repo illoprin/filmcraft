@@ -942,6 +942,11 @@ fn lift_and_extract_over_no_clips_keep_the_clipboard() {
         s.execute("markers.markIn", json!({"frame": 12})).unwrap();
         s.execute("markers.markOut", json!({"frame": 23})).unwrap();
         assert_eq!(s.execute(cmd, json!({})).unwrap()["copied"], json!(0), "{cmd}");
+        // Lift left V1/A1 untargeted; Paste follows the target tracks, so target them again before
+        // pasting (this test is about the clipboard, not the target tracks).
+        for t in ["V1", "A1"] {
+            s.execute("timeline.setTargeting", json!({"track": t, "targeted": true})).unwrap();
+        }
         s.execute("playhead.set", json!({"frame": 100})).unwrap();
         s.execute("edit.paste", json!({})).unwrap_or_else(|e| panic!("{cmd} then edit.paste: {e:?}"));
         let q = s.active_sequence().unwrap();
