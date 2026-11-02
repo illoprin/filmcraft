@@ -204,6 +204,7 @@ pub const DIRECT: &[(&str, &str, f64)] = &[
     ("channel_mixer_a", "channel_mixer", 0.0),
     ("channel_volume_a", "channel_volume", 0.0),
     ("dynamics_rack", "dynamics_rack", 1.0),
+    ("gate", "noise_gate", 0.2),
     ("multiband_compressor", "multiband_compressor", 1.0),
     ("tube_compressor", "tube_compressor", 1.5),
     ("fft_filter", "fft_filter", 0.1),
