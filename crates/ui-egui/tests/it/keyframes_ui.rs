@@ -1011,6 +1011,26 @@ fn effect_controls_middle_drag_pans_rows_and_time() {
     assert!(after_row.is_none_or(|r| r[1] < before_row[1] - 20.0), "the rows moved up with the pointer: {before_row:?} → {after_row:?}");
 }
 
+#[test]
+/// A collapsed effect previews its keyframes as dots on its header row; expanding it removes the
+/// preview again.
+fn collapsed_effect_previews_its_keyframes() {
+    let (mut d, clip) = Driver::demo();
+    d.seek(1.0);
+    d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "motion", "param": "scale"}));
+    d.frames(2);
+    // Motion is open by default, so its header shows no collapsed preview
+    assert!(d.find("effectControls.collapsedKeyframes.motion").is_none(), "an open effect has no collapsed preview");
+    d.click("effectControls.effect.motion.twirl");
+    d.frames(2);
+    let preview = d.rect("effectControls.collapsedKeyframes.motion");
+    let lane = d.rect("effectControls.lane");
+    assert!(preview[0] >= lane[0] - 1.0 && preview[0] + preview[2] <= lane[0] + lane[2] + 1.0, "the preview sits on the keyframe lane: {preview:?} {lane:?}");
+    d.click("effectControls.effect.motion.twirl");
+    d.frames(2);
+    assert!(d.find("effectControls.collapsedKeyframes.motion").is_none(), "expanding the effect removes the preview");
+}
+
 /// #967: empty lane space clears both the selected refs and the highlight, without an edit.
 #[test]
 fn empty_keyframe_lane_click_clears_selection() {
