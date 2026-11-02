@@ -154,6 +154,22 @@ fn dynamics() -> Vec<ParamDef> {
     v
 }
 
+/// The custom Gate: threshold/timing plus an attenuation floor, sidechain detector band and an
+/// inverse that hears the removed part.
+fn gate() -> Vec<ParamDef> {
+    let mut v = vec![
+        db("threshold", "Threshold", -40.0, -80.0, 0.0),
+        ms("attack", "Attack", 1.0, 0.1, 500.0),
+        ms("release", "Release", 150.0, 1.0, 5000.0),
+        ms("hold", "Hold", 50.0, 0.0, 2000.0),
+        db("floor", "Floor", -60.0, -99.0, 0.0),
+        db("gain", "Gain", 0.0, -24.0, 24.0),
+    ];
+    v.extend(group("Sidechain", vec![hz("sc_hp", "Highpass", 20.0, 20.0, 20000.0), hz("sc_lp", "Lowpass", 20000.0, 20.0, 20000.0)]));
+    v.push(b("inverse", "Inverse", false));
+    v
+}
+
 fn notch_filter() -> Vec<ParamDef> {
     let ids: [[&'static str; 3]; 6] = [
         ["n1_on", "n1_freq", "n1_gain"],
@@ -228,6 +244,7 @@ pub(super) fn defs() -> Vec<EffectDef> {
             ],
         ),
         audio("dynamics_rack", "Dynamics", A_AMP, dynamics()),
+        audio("gate", "Gate", A_AMP, gate()),
         audio(
             "dynamics",
             "Dynamics Processing",
