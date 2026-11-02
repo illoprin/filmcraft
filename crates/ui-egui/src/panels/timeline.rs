@@ -756,6 +756,11 @@ fn paint_track_edits(
         // at home.
         let mut draws: Vec<(&filmcraft_project::Transition, Tick, Tick, bool)> = Vec::new();
         for trn in &tr.transitions {
+            // one-sided audio fades are drawn as a ramp on the clip (timeline_fade), not as a
+            // transition box, so the two representations do not overlap
+            if super::timeline_fade::is_fade_transition(trn) {
+                continue;
+            }
             let carried = move_transition_preview(app, seq, trn);
             // the transition's home span (a transition dragged by an end still takes over)
             let (start, end) = match &app.tl.drag {
@@ -771,6 +776,9 @@ fn paint_track_edits(
             draws.push((trn, start, end, false));
         }
         for (trn, s, e) in carried_transitions.get(&r.track).into_iter().flatten() {
+            if super::timeline_fade::is_fade_transition(trn) {
+                continue;
+            }
             draws.push((trn, *s, *e, copying));
         }
         for (trn, start, end, ghost) in draws {
