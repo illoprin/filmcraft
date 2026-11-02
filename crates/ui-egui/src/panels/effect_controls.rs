@@ -933,6 +933,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(body.min, pos2(lane.max.x, body.max.y))).id_salt("ec-body"));
     bui.set_clip_rect(Rect::from_min_max(body.min, pos2(rect.max.x, body.max.y)));
     let scroll_source = egui::scroll_area::ScrollSource { mouse_wheel: !(zooming_at_pointer || wheel_panning), ..Default::default() };
+    // The drop marker is collected here and painted after the ScrollArea, on top of the rows: a
+    // line drawn inside the loop would be covered by the next row's background (rows are contiguous).
+    let mut drop_line: Option<Rect> = None;
     let scroll_out = egui::ScrollArea::vertical().id_salt("ec-scroll").auto_shrink([false, false]).scroll_source(scroll_source).show(&mut bui, |bui| {
         // A middle-button pan moves the rows with the pointer (through the pass-state scroll delta,
         // which the ScrollArea applies after this closure), so it does not fight its own physics.
@@ -1048,16 +1051,23 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     effect_drag = Some(EffectDrag { clip: clip.0, from: idx, target: Some(idx), name: crate::i18n::t(def.name).to_owned() });
                     bui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 }
-                if let Some(drag) = effect_drag.as_mut() {
-                    if drag.clip == clip.0 && resp.hovered() && def.intrinsic {
-                        drag.target = None;
-                    } else if drag.clip == clip.0 && !def.intrinsic && resp.hovered() {
-                        let below = bui.input(|i| i.pointer.hover_pos().is_some_and(|p| p.y > r.center().y));
-                        let insertion = if below { idx.saturating_add(1) } else { idx };
-                        let to = if drag.from < insertion { insertion.saturating_sub(1) } else { insertion };
-                        drag.target = Some(to.min(it.effects.len().saturating_sub(1)));
-                        let y = if below { r.max.y } else { r.min.y };
-                        bui.painter().line_segment([pos2(r.min.x, y), pos2(r.max.x, y)], Stroke::new(2.0, t.accent));
+                if let Some(drag) = effect_drag.as_mut()
+                    && drag.clip == clip.0
+                {
+                    // use the pointer position, not hover, so the marker shows over whichever row
+                    // the pointer is on while the row itself is being dragged
+                    let hovered = bui.ctx().pointer_hover_pos().filter(|p| r.contains(*p));
+                    if let Some(p) = hovered {
+                        if def.intrinsic {
+                            drag.target = None;
+                        } else {
+                            let below = p.y > r.center().y;
+                            let insertion = if below { idx.saturating_add(1) } else { idx };
+                            let to = if drag.from < insertion { insertion.saturating_sub(1) } else { insertion };
+                            drag.target = Some(to.min(it.effects.len().saturating_sub(1)));
+                            let y = if below { r.max.y } else { r.min.y };
+                            drop_line = Some(Rect::from_min_max(pos2(r.min.x, y - 1.0), pos2(r.max.x, y + 1.0)));
+                        }
                     }
                 }
                 let mut save_preset = false;
@@ -1151,6 +1161,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     });
     let _ = scroll_out;
+    // the drop marker on top of the rows (see `drop_line`)
+    if let Some(line) = drop_line {
+        ui.painter().rect_filled(line, 0.0, t.accent);
+    }
     if ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary))
         && let Some(drag) = effect_drag.take()
         && let Some(to) = drag.target.filter(|to| *to != drag.from)
