@@ -46,7 +46,7 @@ pub(super) fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rec
         }
         // as in Premiere, the waveform shows the clip's Volume
         m *= crate::panels::timeline_volume::gain_at(it, t0);
-        m *= crate::panels::timeline_fade::fade_gain(fin, fout, t0);
+        m *= crate::panels::timeline_fade::fade_gain(fin.as_ref(), fout.as_ref(), t0);
         // View ▸ Dynamic Audio Waveforms (default): logarithmic scale, −48 dB → 0, 0 dB → full;
         // off: linear amplitude
         let h = if dynamic {
