@@ -2632,6 +2632,15 @@ fn build() -> Vec<CommandSpec> {
             }
             remove_transitions(s, &ids, "Clear Transition")
         }),
+        cmd!(
+            "clip.fade",
+            "Audio Fade",
+            [],
+            None,
+            r#"{"clip":id,"edge":"in"|"out","duration":ticks?|"frames":n?,"effect":"constant_gain"?,"begin":bool?}"#,
+            has_seq,
+            set_audio_fade
+        ),
         cmd!("sequence.closeGap", "Close Gap", ["Sequence"], None, r#"{"track":"V1"|id?,"time":ticks?}"#, has_seq, |s, p| {
             // Shortcuts and menus have no parameters. That form closes the selected gap (#1135),
             // or with none selected every gap between In and Out, as Premiere's Sequence ▸ Close
@@ -5166,6 +5175,96 @@ pub fn preview_transition(s: &Session, p: &Value, kind: TrackKind) -> Result<(Tr
     };
     let tr = Transition { id: TransitionId(0), effect: instance, start: rate.snap(start), duration: dur, from, to, align, reverse };
     Ok((track, tr))
+}
+
+/// Set a one-sided audio fade on a clip edge (`clip.fade`), the fade a Timeline handle drag makes:
+/// a Constant Gain transition fading the clip in or out over `duration` (or `frames`). A zero
+/// length removes the fade. Repeated calls for the same clip and edge merge into one undo step;
+/// `begin: true` starts a new one.
+fn set_audio_fade(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "clip.fade";
+    let clip = clip_p(p, "clip").ok_or_else(|| bad(CMD, "need `clip`"))?;
+    let edge_in = match str_p(p, "edge") {
+        Some("in") => true,
+        Some("out") => false,
+        _ => return Err(bad(CMD, "`edge` is in or out")),
+    };
+    let effect = str_p(p, "effect").unwrap_or("constant_gain");
+    let def = filmcraft_project::vtransition::find_transition(effect, filmcraft_project::EffectKind::AudioTransition)
+        .ok_or_else(|| bad(CMD, format!("`{effect}` is not an audio transition")))?;
+    let rate = s.sequence_rate();
+    let want = match (p.get("frames").and_then(Value::as_i64), p.get("duration").and_then(Value::as_i64)) {
+        (Some(f), _) => rate.tick_of(f.max(0)),
+        (None, Some(d)) => Tick(d.max(0)),
+        (None, None) => Tick::ZERO,
+    };
+    if bool_p(p, "begin").unwrap_or(false) {
+        s.history.merge_key = None;
+    }
+    let is_fade = |x: &Transition| {
+        x.effect.def().is_some_and(|d| d.kind == filmcraft_project::EffectKind::AudioTransition)
+            && if edge_in { x.to == Some(clip) && x.from.is_none() } else { x.from == Some(clip) && x.to.is_none() }
+    };
+    // a zero-length call with no fade to remove changes nothing (no empty undo step)
+    if want <= Tick::ZERO {
+        let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+        let has = seq.find_item(clip).and_then(|(t, _)| seq.track(t)).is_some_and(|tr| tr.transitions.iter().any(&is_fade));
+        if !has {
+            return Ok(json!({"fade": 0}));
+        }
+    }
+    let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    let key = format!("fade:{}:{}", clip.0, if edge_in { "in" } else { "out" });
+    s.edit_merged("Audio Fade", &key, |pr, _| {
+        let (track, it, existing) = {
+            let seq = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
+            let (track, it) = seq.find_item(clip).map(|(t, i)| (t, i.clone())).ok_or_else(|| bad(CMD, "no such clip"))?;
+            let existing = seq.track(track).and_then(|tr| tr.transitions.iter().position(is_fade));
+            (track, it, existing)
+        };
+        let dur = want.min(it.duration).max(Tick::ZERO);
+        if dur <= Tick::ZERO {
+            if let Some(i) = existing {
+                let seq = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
+                if let Some(tr) = seq.track_mut(track) {
+                    tr.transitions.remove(i);
+                }
+            }
+            return Ok(json!({"fade": 0}));
+        }
+        let (start, align, from, to) =
+            if edge_in { (it.start, TransitionAlign::StartAtCut, None, Some(clip)) } else { (it.end() - dur, TransitionAlign::EndAtCut, Some(clip), None) };
+        // a creating call takes its id before the sequence borrow
+        let new_id = existing.is_none().then(|| TransitionId(pr.alloc_id()));
+        let seq = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
+        let tr = seq.track_mut(track).ok_or_else(|| bad(CMD, "no such track"))?;
+        match existing {
+            Some(i) => {
+                let x = &mut tr.transitions[i];
+                x.start = start;
+                x.duration = dur;
+                x.from = from;
+                x.to = to;
+                x.align = align;
+                x.reverse = false;
+                x.effect = def.instance();
+            }
+            None => {
+                tr.transitions.push(Transition {
+                    id: new_id.unwrap_or(TransitionId(0)),
+                    effect: def.instance(),
+                    start,
+                    duration: dur,
+                    from,
+                    to,
+                    align,
+                    reverse: false,
+                });
+                tr.sort();
+            }
+        }
+        Ok(json!({"fade": dur.0}))
+    })
 }
 
 /// JSON description of the project (bins, items) for agents.

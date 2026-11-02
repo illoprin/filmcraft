@@ -29,6 +29,8 @@ pub(super) fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rec
     };
     let gain = waveform_display_gain(peak, it.gain_db);
     let dynamic = app.ui.extras.dynamic_waveforms;
+    // fade in/out handles attenuate the clip's waveform so the ramp reads on the same glass
+    let (fin, fout) = crate::panels::timeline_fade::clip_fades(app, it.id);
     let mut mesh = egui::Mesh::default();
     let dur_px = body.width().max(1.0);
     for x in (clip.min.x.floor() as i32)..(clip.max.x.ceil() as i32) {
@@ -44,6 +46,7 @@ pub(super) fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rec
         }
         // as in Premiere, the waveform shows the clip's Volume
         m *= crate::panels::timeline_volume::gain_at(it, t0);
+        m *= crate::panels::timeline_fade::fade_gain(fin, fout, t0);
         // View ▸ Dynamic Audio Waveforms (default): logarithmic scale, −48 dB → 0, 0 dB → full;
         // off: linear amplitude
         let h = if dynamic {

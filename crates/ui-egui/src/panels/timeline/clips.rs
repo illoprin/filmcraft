@@ -308,6 +308,10 @@ pub(super) fn draw_clip(
         let tr = pos2(body.max.x, body.min.y);
         clip_p.add(egui::Shape::convex_polygon(vec![tr, tr + vec2(0.0, tri), tr - vec2(tri, 0.0)], Color32::from_white_alpha(220), Stroke::NONE));
     }
+    // audio fade handles at the top corners (drag to fade in or out; see timeline_fade)
+    if kind == TrackKind::Audio && it.enabled {
+        crate::panels::timeline_fade::paint(app, p, body, it, t);
+    }
     // 1 pt black separator at the clip's left edge
     p.line_segment([pos2(body.min.x + 0.5, body.min.y), pos2(body.min.x + 0.5, body.max.y)], Stroke::new(1.0, Color32::BLACK));
     if selected {

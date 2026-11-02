@@ -477,6 +477,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // ---- interaction
     interact(app, ui, seq, &layout, rect);
     super::timeline_volume::interact(app, ui, seq, &layout, aclip);
+    super::timeline_fade::interact(app, ui, seq, &layout, aclip);
     // track keyframes (drawn and edited on top of the clips)
     super::timeline_automation::show(app, ui, seq, &layout, aclip);
     if cap_n > 0 {
