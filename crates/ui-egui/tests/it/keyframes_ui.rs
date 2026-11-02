@@ -952,6 +952,65 @@ fn effect_controls_divider_and_scrolling_anywhere() {
     assert!(after.is_none_or(|r| r[1] < before[1] - 20.0), "the rows scrolled up: {before:?} → {after:?}");
 }
 
+#[test]
+/// Shift + wheel pans the keyframe lane's time view sideways, as it scrolls the Timeline: the
+/// content follows the wheel and the view keeps its width.
+fn effect_controls_shift_wheel_pans_the_keyframe_lane() {
+    let (mut d, _clip) = Driver::demo();
+    d.ok("ui.set", json!({"effectControls": {"timeZoom": [0.2, 0.6]}}));
+    d.frames(3);
+    let lane = d.rect("effectControls.lane");
+    let before = d.harness.state().ui.effect_controls_time_zoom.expect("initial zoom");
+    assert!((before[1] - before[0] - 0.4).abs() < 1e-9);
+    // a wheel "down" (positive dy) moves the content right, revealing earlier time
+    d.ok("ui.scroll", json!({"x": lane[0] + lane[2] * 0.5, "y": lane[1] + lane[3] * 0.5, "dy": 120.0, "modifiers": {"shift": true}}));
+    d.frames(3);
+    let after = d.harness.state().ui.effect_controls_time_zoom.expect("Shift + wheel pans");
+    assert!((after[1] - after[0] - (before[1] - before[0])).abs() < 1e-9, "the view keeps its width: {before:?} → {after:?}");
+    assert!(after[0] < before[0], "the wheel reveals earlier time: {before:?} → {after:?}");
+    // and the opposite direction reveals later time
+    d.ok("ui.scroll", json!({"x": lane[0] + lane[2] * 0.5, "y": lane[1] + lane[3] * 0.5, "dy": -60.0, "modifiers": {"shift": true}}));
+    d.frames(2);
+    let back = d.harness.state().ui.effect_controls_time_zoom.expect("Shift + wheel pans back");
+    assert!(back[0] > after[0], "the opposite wheel direction reveals later time: {after:?} → {back:?}");
+    // a plain wheel over the lane still scrolls the rows, not the time view
+    let rows = d.harness.state().ui.effect_controls_time_zoom;
+    d.ok("ui.scroll", json!({"x": lane[0] + lane[2] * 0.5, "y": lane[1] + lane[3] * 0.5, "dy": -40.0}));
+    d.frames(2);
+    assert_eq!(d.harness.state().ui.effect_controls_time_zoom, rows, "a plain wheel leaves the time view alone");
+}
+
+#[test]
+/// Middle-button dragging pans Effect Controls on both axes: horizontally it slides the keyframe
+/// lane's time view, vertically it scrolls the effect rows with the pointer.
+fn effect_controls_middle_drag_pans_rows_and_time() {
+    let (mut d, clip) = Driver::demo();
+    // enough effects that the rows overflow the panel and can scroll
+    for fx in ["gaussian_blur", "transform", "crop", "tint"] {
+        d.exec("effects.apply", json!({"clips": [clip.id], "effect": fx}));
+    }
+    d.ok("ui.set", json!({"effectControls": {"timeZoom": [0.2, 0.6]}}));
+    d.frames(4);
+    let lane = d.rect("effectControls.lane");
+    let before = d.harness.state().ui.effect_controls_time_zoom.expect("initial zoom");
+    // middle-drag 120 points left over the lane: the content follows, revealing later time
+    let from = (lane[0] + lane[2] * 0.7, lane[1] + lane[3] * 0.5);
+    d.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": from.0 - 120.0, "y": from.1}, "steps": 8, "button": "middle"}));
+    d.frames(3);
+    let after = d.harness.state().ui.effect_controls_time_zoom.expect("middle-drag pans the time view");
+    assert!((after[1] - after[0] - (before[1] - before[0])).abs() < 1e-9, "the time view keeps its width");
+    assert!(after[0] > before[0], "middle-dragging left reveals later time: {before:?} → {after:?}");
+
+    // vertically: a middle-drag up moves the rows up with the pointer
+    let lane = d.rect("effectControls.lane");
+    let before_row = d.rect("effectControls.effect.motion");
+    let from = (lane[0] + lane[2] * 0.5, lane[1] + lane[3] * 0.5);
+    d.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": from.0, "y": from.1 - 60.0}, "steps": 8, "button": "middle"}));
+    d.frames(3);
+    let after_row = d.find("effectControls.effect.motion");
+    assert!(after_row.is_none_or(|r| r[1] < before_row[1] - 20.0), "the rows moved up with the pointer: {before_row:?} → {after_row:?}");
+}
+
 /// #967: empty lane space clears both the selected refs and the highlight, without an edit.
 #[test]
 fn empty_keyframe_lane_click_clears_selection() {
