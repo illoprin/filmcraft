@@ -127,6 +127,13 @@ pub enum Icon {
     Moon,
     /// Colour parameters: pick a colour from the Program monitor (a pipette).
     Eyedropper,
+    /// Copy (two overlapping frames) and Paste (a clipboard).
+    Copy,
+    Paste,
+    /// Save (a floppy disk), the Audio Track Mixer's preset button.
+    Save,
+    /// A bookmark: the preset list (Apply Preset).
+    Bookmark,
 }
 
 pub struct Pen16<'a> {
@@ -792,6 +799,25 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.line(&[(9.5, 7.5), (3.5, 12.5)]);
             pen.line(&[(3.5, 12.5), (2.5, 13.5)]);
         }
+        Copy => {
+            // two overlapping frames: the back one's top-left corner, the front one whole
+            pen.rect(2.5, 2.5, 10.0, 10.0);
+            pen.rect(6.0, 6.0, 13.5, 13.5);
+        }
+        Paste => {
+            // a clipboard: the board and the clip that holds the sheet
+            pen.rect(2.5, 3.5, 13.5, 14.0);
+            pen.rect(5.5, 2.0, 10.5, 5.0);
+            pen.rect_fill(6.8, 3.0, 9.2, 4.0);
+        }
+        Save => {
+            // a floppy disk: the body, the sliding shutter at the top and the label below
+            pen.rect(2.5, 2.5, 13.5, 13.5);
+            pen.rect(5.5, 2.5, 10.5, 6.0);
+            pen.rect_fill(6.7, 3.4, 9.3, 5.1);
+            pen.rect(4.5, 9.0, 11.5, 13.5);
+        }
+        Bookmark => pen.closed(&[(4.0, 2.0), (12.0, 2.0), (12.0, 14.0), (8.0, 11.0), (4.0, 14.0)]),
     }
 }
 
@@ -928,6 +954,10 @@ mod tests {
         Network,
         Clock,
         Eyedropper,
+        Copy,
+        Paste,
+        Save,
+        Bookmark,
     ];
 
     /// Paint `icon` at `ppp` device pixels per point into a rect of `size` points whose corner is

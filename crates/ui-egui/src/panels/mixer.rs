@@ -229,6 +229,24 @@ fn slot_box(ui: &mut egui::Ui, r: Rect, text: &str, filled: bool, dim: bool, t: 
     resp
 }
 
+/// A left-gutter icon button of the Track Mixer (Copy/Paste Effects, presets): a hoverable icon
+/// that is dim and inert when `enabled` is false. `id` names its automation element.
+fn gutter_button(ui: &mut egui::Ui, r: Rect, icon: Icon, enabled: bool, t: &Tokens, id: &str, tip: &str) -> egui::Response {
+    let resp = ui.interact(r, egui::Id::unique(("mixer-gutter", id)), if enabled { Sense::click() } else { Sense::hover() }).on_hover_text(tip);
+    if enabled && resp.hovered() {
+        ui.painter().rect_filled(r, 3.0, t.hover);
+    }
+    let col = if !enabled {
+        t.text_faint
+    } else if resp.hovered() {
+        t.tab_text_active
+    } else {
+        t.icon
+    };
+    icons::paint(ui.painter(), r.shrink(3.0), icon, col);
+    resp
+}
+
 /// The DSP-backed audio effects that can go in an insert slot.
 fn insert_effects() -> Vec<&'static filmcraft_project::EffectDef> {
     filmcraft_project::effect_defs()
@@ -359,6 +377,33 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         show_hide = open && !close;
     }
     ui.data_mut(|d| d.insert_temp(show_hide_id, show_hide));
+    // Left-gutter track actions (Copy/Paste Effects, presets) act on the selected strip. The
+    // selected column is highlighted; with nothing selected the first audio track is selected.
+    let valid: Vec<TrackId> = seq.strip_ids();
+    if app.ui.mixer_selected.is_none_or(|s| !valid.iter().any(|id| id.0 == s)) {
+        app.ui.mixer_selected = seq.audio_tracks.first().map(|t| t.id.0);
+    }
+    let selected = app.ui.mixer_selected.and_then(|s| valid.iter().find(|id| id.0 == s).copied());
+    let has_fx_clip = app.session.state.track_fx_clipboard.is_some();
+    let gx = body.min.x + 2.0;
+    let mut gy = body.min.y + 48.0;
+    let r = Rect::from_min_size(pos2(gx, gy), vec2(14.0, 18.0));
+    let resp = gutter_button(ui, r, Icon::Copy, selected.is_some(), &t, "mixer.copyEffects", tl!("Copy effects from selected track"));
+    app.auto.add("mixer.copyEffects", r, "Copy effects from selected track");
+    if resp.clicked()
+        && let Some(s) = selected
+    {
+        cx.cmd("mixer.copyInserts", json!({"strip": s.0}));
+    }
+    gy += 22.0;
+    let r = Rect::from_min_size(pos2(gx, gy), vec2(14.0, 18.0));
+    let resp = gutter_button(ui, r, Icon::Paste, selected.is_some() && has_fx_clip, &t, "mixer.pasteEffects", tl!("Paste effects on selected track"));
+    app.auto.add("mixer.pasteEffects", r, "Paste effects on selected track");
+    if resp.clicked()
+        && let Some(s) = selected
+    {
+        cx.cmd("mixer.pasteInserts", json!({"strip": s.0}));
+    }
     let strips: Vec<TrackId> = seq.strip_ids().into_iter().filter(|id| !app.ui.mixer_hidden.contains(&id.0)).collect();
     let x0 = body.min.x + 18.0;
     let total = strips.len() as f32 * (STRIP_W + 2.0);
@@ -688,7 +733,16 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
     let ap = format!("mixer.{label}");
     let is_master = id == MASTER_STRIP;
     let sid = json!(id.0);
-    ui.painter().rect_filled(sr, 3.0, t.control_surface);
+    // Clicking the strip (anywhere not on a control) selects it; the selected column is highlighted.
+    let selected = app.ui.mixer_selected == Some(id.0);
+    let sel = ui.interact(sr, egui::Id::unique(("mixer-select", id.0)), Sense::click());
+    if sel.clicked() {
+        app.ui.mixer_selected = Some(id.0);
+    }
+    ui.painter().rect_filled(sr, 3.0, if selected { t.control_surface.gamma_multiply(1.3) } else { t.control_surface });
+    if selected {
+        ui.painter().rect_stroke(sr, 3.0, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+    }
     ui.painter().line_segment([pos2(sr.max.x + 1.0, sr.min.y), pos2(sr.max.x + 1.0, sr.max.y)], Stroke::new(1.0, t.separator));
     let x = sr.min.x;
     let w = sr.width();
