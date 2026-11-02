@@ -166,10 +166,13 @@ as far as the clips (they would overlap captions that stay, or one is on a locke
 nothing moves; it cannot be combined with `copy`, and the result lists them as `captions`.
 
 **Audio fades**: `clip.fade {clip, edge: in|out, duration|frames?, effect?: constant_gain, begin?}` makes
-(or, with a zero duration, removes) a one-sided Constant Gain fade at the clip's edge — the fade a
-Timeline handle drag makes. Repeated calls for the same clip and edge share one undo step (`begin:
-true` starts a new one). The top-corner triangles are the elements `timeline.clip.<id>.fade.in` /
-`.fade.out`, and the clip's waveform is drawn at the faded amplitude.
+(or, with a zero duration, removes) a one-sided fade at the clip's edge — the fade a Timeline handle
+or boundary drag makes. Repeated calls for the same clip and edge share one undo step (`begin: true`
+starts a new one). The top-corner triangles are the elements `timeline.clip.<id>.fade.in` /
+`.fade.out`; a gray boundary at the fade's inner edge is `….fade.in.boundary` / `.fade.out.boundary`
+(dragging it resizes the fade, under a frame removes it, Alt makes it an Exponential Fade). The clip's
+Volume line is hidden and cannot change inside a fade, and its waveform is drawn at the faded
+amplitude.
 
 **Trim mode** (`crates/engine/src/trim.rs`): `trim.selectEditPoint` / `trim.selectNearest` enter trim
 mode (the Program monitor becomes the Trim Monitor, ids `trimMonitor.*`); `trim.monitor` returns what

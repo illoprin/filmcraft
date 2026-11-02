@@ -69,17 +69,25 @@ impl Driver {
     }
 
     fn drag(&mut self, from: Pos2, to: Pos2, steps: usize) {
+        self.drag_mods(from, to, steps, egui::Modifiers::NONE);
+    }
+
+    /// A drag with modifier keys held throughout (`Modifiers::ALT` and friends).
+    fn drag_mods(&mut self, from: Pos2, to: Pos2, steps: usize, mods: egui::Modifiers) {
         let push = |d: &mut Self, e: egui::Event| d.harness.input_mut().events.push(e);
+        push(self, egui::Event::ModifiersChanged(mods));
         push(self, egui::Event::PointerMoved(from));
         self.frames(1);
-        push(self, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        push(self, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: mods });
         self.frames(1);
         for i in 1..=steps {
             push(self, egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32)));
             self.frames(1);
         }
-        push(self, egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        push(self, egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: mods });
         self.frames(2);
+        push(self, egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        self.frames(1);
     }
 
     fn cursor(&self) -> CursorIcon {
@@ -91,13 +99,17 @@ impl Driver {
         (it.start.0, it.end().0)
     }
 
-    /// Screen rect (x, y, w, h) of a clip block.
-    fn clip_rect(&mut self, clip: u64) -> [f32; 4] {
-        let id = format!("timeline.clip.{clip}");
+    /// Screen rect (x, y, w, h) of an element by automation id.
+    fn rect(&mut self, id: &str) -> [f32; 4] {
         let els = self.ok("ui.elements", json!({"prefix": id}));
-        let el = els.as_array().expect("elements").iter().find(|e| e["id"] == id.as_str()).unwrap_or_else(|| panic!("no {id}: {els}")).clone();
+        let el = els.as_array().expect("elements").iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no {id}: {els}")).clone();
         let r = el["rect"].as_array().expect("rect");
         [r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32, r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32]
+    }
+
+    /// Screen rect (x, y, w, h) of a clip block.
+    fn clip_rect(&mut self, clip: u64) -> [f32; 4] {
+        self.rect(&format!("timeline.clip.{clip}"))
     }
 }
 
@@ -140,4 +152,52 @@ fn dragging_a_fade_handle_fades_without_trimming() {
         );
     }
     assert_eq!(d.span(clip), (s0, e0), "the fade out drag did not trim the clip");
+}
+
+/// The gray boundary at a fade's inner edge: dragging it resizes the fade, an Alt drag makes it an
+/// Exponential Fade, and dragging it under a frame removes the fade. The Volume line (and its
+/// automation point) stay outside the fade.
+#[test]
+fn the_fade_boundary_resizes_makes_it_exponential_and_removes_it() {
+    let mut d = Driver::demo();
+    let clip = a1_clip(&d);
+    let (s0, e0) = d.span(clip);
+    let r = d.clip_rect(clip);
+    let by = (r[2] / 4.0).round().max(12.0);
+    // make a fade in with the corner handle
+    d.drag(pos2(r[0] + 3.0, r[1] + 3.0), pos2(r[0] + 3.0 + by, r[1] + 3.0), 20);
+    let fade = |d: &Driver| -> Option<String> {
+        let q = d.app().session.active_sequence().unwrap();
+        q.audio_tracks[0].transitions.iter().find(|x| x.to == Some(ClipId(clip)) && x.from.is_none()).map(|x| x.effect.effect.clone())
+    };
+    let dur = |d: &Driver| -> i64 {
+        let q = d.app().session.active_sequence().unwrap();
+        q.audio_tracks[0].transitions.iter().find(|x| x.to == Some(ClipId(clip)) && x.from.is_none()).map(|x| x.duration.0).unwrap_or(0)
+    };
+    assert!(dur(&d) > 0, "a fade in was made");
+    let b = format!("timeline.clip.{clip}.fade.in.boundary");
+    let br = d.rect(&b);
+    // the Volume line (its agent point) sits outside the fade, to the right of the boundary
+    let vol = d.rect(&format!("timeline.clip.{clip}.volume"));
+    assert!(vol[0] >= br[0], "the Volume line is not inside the fade: volume {vol:?}, boundary {br:?}");
+    // hovering the boundary shows the horizontal resize cursor
+    let mid = pos2(br[0] + br[2] / 2.0, br[1] + br[3] / 2.0);
+    d.hover(mid);
+    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "the boundary shows the resize cursor");
+    // drag it out: the fade grows
+    let d0 = dur(&d);
+    d.drag(mid, pos2(mid.x + by, mid.y), 20);
+    assert!(dur(&d) > d0, "dragging the boundary out grows the fade: {d0} -> {}", dur(&d));
+    // Alt drag makes it an Exponential Fade
+    let br = d.rect(&b);
+    let mid = pos2(br[0] + br[2] / 2.0, br[1] + br[3] / 2.0);
+    d.drag_mods(mid, pos2(mid.x + by, mid.y), 20, egui::Modifiers::ALT);
+    assert_eq!(fade(&d).as_deref(), Some("exponential_fade"), "Alt makes it Exponential Fade");
+    // drag it back to the clip edge (under a frame): the fade is removed
+    let br = d.rect(&b);
+    let mid = pos2(br[0] + br[2] / 2.0, br[1] + br[3] / 2.0);
+    d.drag(mid, pos2(r[0], mid.y), 20);
+    assert_eq!(dur(&d), 0, "a fade under a frame is removed");
+    assert!(fade(&d).is_none());
+    assert_eq!(d.span(clip), (s0, e0), "resizing the fade did not trim the clip");
 }

@@ -90,17 +90,22 @@ fn keys(it: &TrackItem, body: Rect) -> Vec<(Tick, Pos2)> {
     p.keyframes.iter().map(|k| (k.time, pos2(x_of(it, body, timeline_time(it, k.time)), y_of(body, k.value.as_f64().unwrap_or(0.0))))).collect()
 }
 
-/// Draw the line over an audio clip drawn at `body`: white with a dark shadow.
-pub fn paint(p: &egui::Painter, body: Rect, it: &TrackItem) {
+/// Draw the line over an audio clip drawn at `body`: white with a dark shadow. `edit` is the
+/// sub-range of the clip the line may cover — a one-sided fade hides the line inside itself.
+pub fn paint(p: &egui::Painter, body: Rect, it: &TrackItem, edit: (Tick, Tick)) {
     let vis = p.clip_rect().intersect(body);
     if band(body).height() < 6.0 || vis.width() <= 0.0 {
         return;
     }
-    let p = p.with_clip_rect(vis);
-    let pts = line(it, body, vis.min.x, vis.max.x);
+    let (e0, e1) = (x_of(it, body, edit.0).max(vis.min.x), x_of(it, body, edit.1).min(vis.max.x));
+    if e1 <= e0 {
+        return;
+    }
+    let p = p.with_clip_rect(Rect::from_min_max(pos2(e0, vis.min.y), pos2(e1, vis.max.y)));
+    let pts = line(it, body, e0, e1);
     p.add(egui::Shape::line(pts.iter().map(|q| *q + vec2(0.0, 1.0)).collect(), Stroke::new(1.0, Color32::BLACK)));
     p.add(egui::Shape::line(pts, Stroke::new(1.0, Color32::WHITE)));
-    for (_, c) in keys(it, body).into_iter().filter(|(_, c)| vis.expand(6.0).contains(*c)) {
+    for (_, c) in keys(it, body).into_iter().filter(|(_, c)| c.x >= e0 - 6.0 && c.x <= e1 + 6.0 && vis.expand(6.0).contains(*c)) {
         icons::paint(&p, Rect::from_center_size(c, vec2(9.0, 9.0)), Icon::Keyframe, KEY_COL);
     }
 }
@@ -140,7 +145,13 @@ pub fn on_line(seq: &Sequence, layout: &Layout, clip: ClipId, pos: Pos2) -> bool
         return false;
     }
     let body = body(layout, r, it);
-    band(body).height() >= 6.0 && (pos.y - y_of(body, level_at(it, t_at(it, body, pos.x)))).abs() <= 4.0
+    if band(body).height() < 6.0 {
+        return false;
+    }
+    // inside a one-sided fade the line is hidden and its level cannot change
+    let (e0, e1) = crate::panels::timeline_fade::volume_range(seq, r.track, clip);
+    let t = t_at(it, body, pos.x);
+    t >= e0 && t <= e1 && (pos.y - y_of(body, level_at(it, t))).abs() <= 4.0
 }
 
 /// A press on `clip`'s line at `at` that became a drag.
@@ -249,9 +260,16 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
             if vis.width() <= 0.0 || band(body).height() < 6.0 {
                 continue;
             }
+            // no Volume line inside a one-sided fade: the fade owns that stretch
+            let (e0, e1) = crate::panels::timeline_fade::volume_range(seq, r.track, it.id);
+            if e1 <= e0 {
+                continue;
+            }
+            let ex0 = x_of(it, body, e0);
+            let ex1 = x_of(it, body, e1);
             // a point on the line for agents, away from the trim zones at the edges
             let edge = EDGE_PX.min(body.width() / 3.0);
-            let (x0, x1) = (vis.min.x.max(body.min.x + edge), vis.max.x.min(body.max.x - edge));
+            let (x0, x1) = (vis.min.x.max(body.min.x + edge).max(ex0), vis.max.x.min(body.max.x - edge).min(ex1));
             if x1 > x0 {
                 let xm = (x0 + x1) / 2.0;
                 let c = pos2(xm, y_of(body, level_at(it, t_at(it, body, xm))));
@@ -259,7 +277,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
             }
             let ks = keys(it, body);
             for (i, &(time, c)) in ks.iter().enumerate() {
-                if !vis.expand2(vec2(5.0, 0.0)).contains(c) {
+                if !vis.expand2(vec2(5.0, 0.0)).contains(c) || c.x < ex0 || c.x > ex1 {
                     continue;
                 }
                 let kr = Rect::from_center_size(c, vec2(11.0, 11.0));
