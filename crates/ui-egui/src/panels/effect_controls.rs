@@ -72,6 +72,14 @@ fn constrained_time_zoom(zoom: Option<[f64; 2]>, duration: Tick, rate: filmcraft
     (start > 0.0 || end < 1.0).then_some([start, end])
 }
 
+/// The lane fraction of a keyframe at media time `m` within `timeline_range` (0 = the lane's left
+/// edge, 1 its right). Every part of the panel that draws a keyframe against time uses it, so the
+/// graphs follow the same horizontal zoom as the rows.
+fn media_fraction(it: &TrackItem, m: Tick, timeline_range: (Tick, Tick)) -> f32 {
+    let shown = timeline_range.1.0.saturating_sub(timeline_range.0.0).max(1) as f64;
+    ((timeline_time_of(it, m).0 - timeline_range.0.0) as f64 / shown) as f32
+}
+
 /// The part of the clip the keyframe lane shows, in timeline ticks, for a zoom range.
 fn shown_range(start: Tick, duration: Tick, zoom: Option<[f64; 2]>) -> (Tick, Tick) {
     let (from, to) = time_zoom_range(zoom);
@@ -2351,7 +2359,7 @@ pub(crate) fn graph_rows(
     p.text(pos2(velr.max.x - 30.0, varea.min.y + 6.0), Align2::RIGHT_CENTER, format!("{vmax:.1}/s"), Tokens::ui(10.0), t.text_dim);
     let p = p.clone();
     // keyframes + handles
-    draw_graph_keyframes(app, ui, &p, clip, idx, mask, pd, param, it, lane, lo, hi, area, actions);
+    draw_graph_keyframes(app, ui, &p, clip, idx, mask, pd, param, it, lane, timeline_range, lo, hi, area, actions);
 }
 
 /// One parameter's keyframe diamonds on its graph, with the Bezier influence handles.
@@ -2367,15 +2375,16 @@ fn draw_graph_keyframes(
     param: &filmcraft_project::Param,
     it: &TrackItem,
     lane: &Rect,
+    timeline_range: (Tick, Tick),
     lo: f64,
     hi: f64,
     area: Rect,
     actions: &mut Vec<(String, Value)>,
 ) {
     let t = app.tokens;
-    let speed = it.speed.abs().max(1e-6);
-    let dur = it.duration.0.max(1) as f64;
-    let to_f = |m: Tick| ((m - it.source_in).0 as f64 / speed / dur) as f32;
+    // The lane shows only `timeline_range` of the clip: a keyframe's x is its position within the
+    // visible range, so the graph follows the panel's horizontal zoom like the rows do.
+    let to_f = |m: Tick| media_fraction(it, m, timeline_range);
     let x_of = |f: f32| lane.min.x + f * lane.width();
     let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
     let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
@@ -2789,6 +2798,28 @@ mod lane_tests {
         zoomed.shapes.into_iter().for_each(|c| texts(c.shape, &mut labels));
         assert_eq!(labels.first().map(String::as_str), Some("00:01:02:00"));
     }
+
+    #[test]
+    /// The graph places a keyframe at its fraction of the lane's visible range, so a horizontally
+    /// zoomed panel keeps keyframes (and their Bezier handles) at the same time as the rows.
+    fn graph_keyframe_x_follows_the_lane_zoom() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let mut it = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+        it.start += Tick::from_seconds_f64(4.0);
+        it.source_in += Tick::from_seconds_f64(2.0);
+        let frame = s.sequence_rate().frame_duration();
+        let full = (it.start, it.end());
+        let first = it.moving_source_time_at(it.start);
+        let last = it.moving_source_time_at(it.end() - frame);
+        assert!(media_fraction(&it, first, full).abs() < 1e-4, "the first frame sits at the lane's left edge");
+        assert!(media_fraction(&it, last, full) > 0.95, "the last frame sits near its right edge");
+        // zoomed to the second half: the midpoint is the new left edge, not the clip's midpoint
+        let mid = it.start + Tick(it.duration.0 / 2);
+        let zoomed = (mid, it.end());
+        assert!(media_fraction(&it, it.moving_source_time_at(mid), zoomed).abs() < 1e-4, "the zoom re-anchors the keyframes");
+        assert!(media_fraction(&it, last, zoomed) > 0.95);
+    }
 }
 
 #[cfg(test)]
@@ -2839,6 +2870,12 @@ mod graph_drag_tests {
         // Current paint shapes give a real held-frame position rather than previous telemetry.
         /// Draw one frame with the given events and return the keyframe and influence positions painted.
         fn frame(&mut self, events: Vec<egui::Event>) -> [Pos2; 2] {
+            let it = self.app.session.active_sequence().unwrap().find_item(self.clip).unwrap().1.clone();
+            self.frame_over(events, (it.start, it.end()))
+        }
+
+        /// Draw one frame with an explicit shown timeline range (a horizontally zoomed lane).
+        fn frame_over(&mut self, events: Vec<egui::Event>, timeline_range: (Tick, Tick)) -> [Pos2; 2] {
             self.time += 0.1;
             self.app.auto.begin_frame();
             let mut out = self.ctx.run_ui(egui::RawInput { time: Some(self.time), events, ..Default::default() }, |ui| {
@@ -2849,7 +2886,7 @@ mod graph_drag_tests {
                 let body = Rect::from_min_size(pos2(8.0, 8.0), vec2(320.0, 200.0));
                 let lane = Rect::from_min_max(pos2(360.0, 8.0), pos2(760.0, 220.0));
                 let mut actions = Vec::new();
-                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params[self.param], &lane, (it.start, it.end()), &it, &mut actions);
+                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params[self.param], &lane, timeline_range, &it, &mut actions);
                 run(&mut self.app, ui.ctx(), actions);
             });
             out.textures_delta.clear();
@@ -2968,6 +3005,25 @@ mod graph_drag_tests {
         assert!(new.x > old.x, "dragging the X keyframe up raises X: {old:?} -> {new:?}");
         assert_eq!(new.y, old.y);
         assert_eq!(changed.keyframes[1], before.keyframes[1]);
+    }
+
+    /// The graph keyframes follow the lane's horizontal zoom, not the whole clip: with the lane
+    /// zoomed to the second half, the keyframe in the first quarter is off the left edge (and so
+    /// its Bezier handles too), while the one in the second half stays.
+    #[test]
+    fn graph_keyframes_follow_the_lane_zoom() {
+        let mut d = Driver::new();
+        let before = d.param();
+        d.frame(vec![]);
+        let it = d.app.session.active_sequence().unwrap().find_item(d.clip).unwrap().1.clone();
+        let first = format!("effectControls.scale.graph.keyframe.{}", before.keyframes[0].time.0);
+        let second = format!("effectControls.scale.graph.keyframe.{}", before.keyframes[1].time.0);
+        assert!(d.app.auto.find(&first).is_some(), "the full-clip lane draws both keyframes");
+        // zoom to the second half: the keyframe at 1/4 falls outside the visible range
+        let mid = it.start + Tick(it.duration.0 / 2);
+        d.frame_over(vec![], (mid, it.end()));
+        assert!(d.app.auto.find(&first).is_none(), "a keyframe left of the zoomed range is not drawn");
+        assert!(d.app.auto.find(&second).is_some(), "a keyframe inside the zoomed range is drawn");
     }
 }
 
