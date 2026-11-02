@@ -541,6 +541,9 @@ pub struct UiState {
     /// Audio Track Mixer: effects and sends section expanded.
     #[serde(default)]
     pub mixer_fx_open: bool,
+    /// Audio Track Mixer: the selected strip (id), highlighted; Copy/Paste Effects act on it.
+    #[serde(default)]
+    pub mixer_selected: Option<u64>,
     /// Audio Track Mixer ▸ Show/Hide Tracks: strip ids (audio tracks, submixes) not shown.
     #[serde(default)]
     pub mixer_hidden: Vec<u64>,
@@ -1040,6 +1043,7 @@ impl Default for UiState {
             transcript_search: String::new(),
             play_after_render: true,
             mixer_fx_open: false,
+            mixer_selected: None,
             mixer_hidden: Vec::new(),
             mixer_meter_input_only: false,
             settings: None,

@@ -430,6 +430,11 @@ pub struct EditorState {
     /// `None` unless they were the last Copy.
     #[serde(skip)]
     pub keyframe_clipboard: Option<clipboard::EffectKeyframeClipboard>,
+    /// Track inserts copied from the Audio Track Mixer ([`clipboard::TrackEffectsClipboard`]), or
+    /// `None` unless they were the last Copy: the application holds one clipboard (see
+    /// [`clipboard`]), so any other Copy empties this one.
+    #[serde(skip)]
+    pub track_fx_clipboard: Option<clipboard::TrackEffectsClipboard>,
     /// The last Edit ▸ Find… (Find Next continues it).
     #[serde(default)]
     pub find: Option<project_tools::FindState>,

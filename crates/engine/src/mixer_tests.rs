@@ -44,6 +44,8 @@ fn every_mixer_command_is_registered_with_a_label() {
         "mixer.removeInsert",
         "mixer.setInsert",
         "mixer.moveInsert",
+        "mixer.copyInserts",
+        "mixer.pasteInserts",
         "mixer.addSend",
         "mixer.setSend",
         "mixer.removeSend",
@@ -664,4 +666,64 @@ fn move_insert_refuses_a_full_destination() {
     assert!(s.execute("mixer.moveInsert", json!({"strip": "S1", "slot": 0, "toStrip": "A1"})).is_err());
     assert_eq!(a1(&s).effects.len(), 5, "the full strip is untouched");
     assert_eq!(s.active_sequence().unwrap().submix_tracks[0].effects.len(), 1, "the source is untouched too");
+}
+
+/// Copying every insert of a strip and pasting it on another keeps the settings, the post-fader
+/// flag and the keyframes, and the copy lives on the one application clipboard, surviving a
+/// sequence change.
+#[test]
+fn copy_and_paste_track_effects_between_strips_and_sequences() {
+    let mut s = demo();
+    s.execute("mixer.addInsert", json!({"strip": "A1", "effect": "dynamics"})).unwrap();
+    s.execute("mixer.addInsert", json!({"strip": "A1", "effect": "amplify"})).unwrap();
+    s.execute("mixer.setInsert", json!({"strip": "A1", "slot": 0, "params": {"threshold": -30.0}, "postFader": true})).unwrap();
+    let r = s.execute("mixer.copyInserts", json!({"strip": "A1"})).unwrap();
+    assert_eq!(r, json!({"count": 2}));
+    // paste appends the copied chain to A2
+    let r = s.execute("mixer.pasteInserts", json!({"strip": "A2"})).unwrap();
+    assert_eq!(r, json!({"pasted": 2, "dropped": 0}));
+    {
+        let q = s.active_sequence().unwrap();
+        let a2 = &q.audio_tracks[1];
+        assert_eq!(a2.effects.iter().map(|e| e.effect.as_str()).collect::<Vec<_>>(), ["dynamics", "amplify"]);
+        assert!(a2.effects[0].post_fader);
+        assert_eq!(a2.effects[0].param("threshold").unwrap().value, ParamValue::Float(-30.0));
+    }
+    // one undo step takes the pasted effects off again
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.active_sequence().unwrap().audio_tracks[1].effects.is_empty());
+    // paste again, then open another sequence: the clipboard is the application's, so it survives
+    s.execute("mixer.pasteInserts", json!({"strip": "A2"})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Other", "video": 1, "audio": 1})).unwrap();
+    let r = s.execute("mixer.pasteInserts", json!({"strip": "A1"})).unwrap();
+    assert_eq!(r, json!({"pasted": 2, "dropped": 0}), "the clipboard crosses sequences");
+    assert_eq!(s.active_sequence().unwrap().audio_tracks[0].effects.len(), 2);
+    // nothing copied (the clipboard was emptied): paste says so
+    s.state.track_fx_clipboard = None;
+    assert!(s.execute("mixer.pasteInserts", json!({"strip": "A1"})).is_err());
+}
+
+/// Pasting fills only the free slots: the effects that do not fit are dropped.
+#[test]
+fn paste_track_effects_fills_free_slots_and_drops_the_rest() {
+    let mut s = demo();
+    for _ in 0..5 {
+        s.execute("mixer.addInsert", json!({"strip": "A1", "effect": "dynamics"})).unwrap();
+    }
+    assert_eq!(s.execute("mixer.copyInserts", json!({"strip": "A1"})).unwrap(), json!({"count": 5}));
+    for _ in 0..3 {
+        s.execute("mixer.addInsert", json!({"strip": "A2", "effect": "amplify"})).unwrap();
+    }
+    let r = s.execute("mixer.pasteInserts", json!({"strip": "A2"})).unwrap();
+    assert_eq!(r, json!({"pasted": 2, "dropped": 3}));
+    {
+        let a2 = &s.active_sequence().unwrap().audio_tracks[1];
+        assert_eq!(a2.effects.len(), 5);
+        assert_eq!(a2.effects.iter().filter(|e| e.effect == "amplify").count(), 3);
+        assert_eq!(a2.effects.iter().filter(|e| e.effect == "dynamics").count(), 2);
+    }
+    // a full destination is an error and changes nothing
+    let before = s.project.clone();
+    assert!(s.execute("mixer.pasteInserts", json!({"strip": "A2"})).is_err());
+    assert_eq!(s.project, before);
 }

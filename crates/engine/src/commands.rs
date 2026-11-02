@@ -4391,6 +4391,7 @@ fn set_clipboard(st: &mut crate::EditorState, (clips, markers): Clipboard) {
     st.caption_clipboard.clear();
     st.effect_clipboard = None;
     st.keyframe_clipboard = None;
+    st.track_fx_clipboard = None;
 }
 
 /// Put a copy of effects on the application clipboard: everything else it held goes, as the
@@ -4400,6 +4401,7 @@ pub(crate) fn set_effect_clipboard(s: &mut Session, effects: crate::clipboard::E
     s.state.clipboard_markers.clear();
     s.state.caption_clipboard.clear();
     s.state.keyframe_clipboard = None;
+    s.state.track_fx_clipboard = None;
     s.state.effect_clipboard = Some(effects);
 }
 
@@ -4409,7 +4411,19 @@ pub(crate) fn set_keyframe_clipboard(s: &mut Session, keyframes: crate::clipboar
     s.state.clipboard_markers.clear();
     s.state.caption_clipboard.clear();
     s.state.effect_clipboard = None;
+    s.state.track_fx_clipboard = None;
     s.state.keyframe_clipboard = Some(keyframes);
+}
+
+/// Put track inserts copied in the Audio Track Mixer on the application clipboard, replacing
+/// everything else it held (one clipboard for the whole application).
+pub(crate) fn set_track_effects_clipboard(s: &mut Session, effects: crate::clipboard::TrackEffectsClipboard) {
+    s.state.clipboard.clear();
+    s.state.clipboard_markers.clear();
+    s.state.caption_clipboard.clear();
+    s.state.effect_clipboard = None;
+    s.state.keyframe_clipboard = None;
+    s.state.track_fx_clipboard = Some(effects);
 }
 
 /// Put a Lift or Extract cut on the clipboard; returns how many clips it holds (0 leaves the

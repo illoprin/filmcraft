@@ -535,3 +535,28 @@ fn dragging_a_mixer_insert_reorders_the_chain() {
     assert_eq!(inserts[0]["effect"], "dynamics", "{inserts:?}");
     assert_eq!(inserts[1]["effect"], "amplify", "{inserts:?}");
 }
+
+/// The Audio Track Mixer's Copy/Paste Effects buttons move a track's whole insert chain to the
+/// selected column: copy A1's effects, select A2 and paste them.
+#[test]
+fn mixer_copy_and_paste_effects_between_strips() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Audio"}));
+    d.frames(3);
+    d.exec("mixer.addInsert", json!({"strip": "A1", "effect": "amplify"}));
+    d.exec("mixer.addInsert", json!({"strip": "A1", "effect": "dynamics"}));
+    d.frames(2);
+    d.click("mixer.A1.name");
+    d.click("mixer.copyEffects");
+    d.click("mixer.A2.name");
+    d.click("mixer.pasteEffects");
+    let inserts = d.strip("A2")["inserts"].as_array().unwrap().clone();
+    assert_eq!(inserts.len(), 2, "{inserts:?}");
+    assert_eq!(inserts[0]["effect"], "amplify");
+    assert_eq!(inserts[1]["effect"], "dynamics");
+    // one undo step takes them off A2 again
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    assert!(d.strip("A2")["inserts"].as_array().unwrap().is_empty());
+    d.snapshot("mixer-copy-paste-effects", Some("mixer."));
+}
