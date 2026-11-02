@@ -4449,9 +4449,21 @@ fn cut_range(q: &filmcraft_project::Sequence, tracks: &[TrackId], range: TimeRan
     Some((clips, markers))
 }
 
+/// The track index a copied clip should land on: tracks marked for targeting (`targeted`, the
+/// track-header target buttons) decide, so pasting honours the target tracks instead of always the
+/// track it was copied from. The copied group's lowest track is anchored to the target track
+/// nearest it (ties to the lower track); with no target of that kind (or every track targeted, the
+/// default) the source track stays.
+fn paste_anchor(q: &filmcraft_project::Sequence, kind: TrackKind, src_min: usize, targeted: &[TrackId]) -> usize {
+    let tracks = q.tracks(kind);
+    let src = src_min.min(tracks.len().saturating_sub(1));
+    targeted.iter().filter_map(|id| tracks.iter().position(|t| t.id == *id)).min_by_key(|i| (i.abs_diff(src), *i)).unwrap_or(src)
+}
+
 /// Paste the clipboard at the playhead (`insert` ripples later clips right instead of
 /// overwriting). Caption clipboards go to the caption track. Pasted clips get fresh ids, links
-/// and groups of their own, are selected, and the playhead moves to their end.
+/// and groups of their own, are selected, and the playhead moves to their end. The target tracks
+/// decide where each copied track lands (see [`paste_anchor`]).
 fn paste(s: &mut Session, insert: bool) -> Result<Value> {
     // The application clipboard holds whatever was copied last, wherever it was copied from:
     // the effects or keyframes copied in Effect Controls, captions, or timeline clips.
@@ -4468,6 +4480,10 @@ fn paste(s: &mut Session, insert: bool) -> Result<Value> {
     let clip = s.state.clipboard.clone();
     let markers = if s.state.copy_paste_sequence_markers { s.state.clipboard_markers.clone() } else { Vec::new() };
     let transitions = s.state.clipboard_transitions.clone();
+    // The target tracks (track targeting) decide where the copied group lands.
+    let targeted = s.targeting().targeted;
+    let src_min = |kind: TrackKind| clip.iter().filter(|(k, _, _)| *k == kind).map(|(_, ti, _)| *ti).min();
+    let (video_min, audio_min) = (src_min(TrackKind::Video), src_min(TrackKind::Audio));
     let end = s.edit_sequence(if insert { "Paste Insert" } else { "Paste" }, |q, ctx, st| {
         let mut placements = Vec::new();
         let mut links = std::collections::HashMap::new();
@@ -4475,9 +4491,15 @@ fn paste(s: &mut Session, insert: bool) -> Result<Value> {
         // would select (and so drag or delete) the originals with them
         let mut groups = std::collections::HashMap::new();
         let mut new_ids = std::collections::HashMap::new();
+        let anchor = |kind: TrackKind, src_min: Option<usize>| src_min.map(|m| paste_anchor(q, kind, m, &targeted));
+        let (video_anchor, audio_anchor) = (anchor(TrackKind::Video, video_min), anchor(TrackKind::Audio, audio_min));
         for (kind, ti, item) in clip {
             let tracks = q.tracks(kind);
-            let Some(t) = tracks.get(ti).or(tracks.last()) else { continue };
+            let want = match kind {
+                TrackKind::Video => video_anchor.map(|a| a + ti - video_min.unwrap_or(ti)),
+                TrackKind::Audio => audio_anchor.map(|a| a + ti - audio_min.unwrap_or(ti)),
+            };
+            let Some(t) = want.and_then(|w| tracks.get(w)).or_else(|| tracks.get(ti)).or(tracks.last()) else { continue };
             let mut it = item.clone();
             it.id = ClipId(ctx.alloc());
             new_ids.insert(item.id, it.id);

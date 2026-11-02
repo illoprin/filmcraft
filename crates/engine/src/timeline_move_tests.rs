@@ -787,3 +787,38 @@ fn copy_paste_drops_transition_to_uncopied_neighbour() {
     assert!(!t.transitions.iter().any(|x| x.from == Some(pasted.id)), "the cut to the neighbour left behind is not pasted: {:?}", t.transitions);
     assert!(t.transitions.len() >= count, "the original transitions stay");
 }
+
+/// The target tracks (track targeting) decide where Paste lands, not the track the clip was copied
+/// from. With every track targeted (the default) the copied track stays; turn the source track's
+/// targeting off and paste sends the copied picture and sound to the targeted track.
+#[test]
+fn paste_lands_on_the_target_track() {
+    let mut s = demo();
+    let (v1, v, a1, a) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let (v2, a2) = {
+        let q = s.active_sequence().unwrap();
+        (q.video_tracks[1].id, q.audio_tracks[1].id)
+    };
+    // default: every track is targeted, so paste keeps the copied tracks
+    s.execute("timeline.select", json!({"clips": [v.id.0]})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    s.set_playhead(v.end());
+    s.execute("edit.paste", json!({})).unwrap();
+    {
+        let q = s.active_sequence().unwrap();
+        assert!(q.track(v1).unwrap().items.iter().any(|i| i.start == v.end()), "default paste stays on V1");
+        assert!(q.track(a1).unwrap().items.iter().any(|i| i.start == a.end()), "default paste stays on A1");
+        assert!(!q.track(v2).unwrap().items.iter().any(|i| i.start == v.end()), "nothing landed on V2");
+    }
+    s.execute("edit.undo", json!({})).unwrap();
+    // only V2 / A2 targeted: paste follows the target tracks
+    s.execute("timeline.setTargeting", json!({"track": v1.0, "targeted": false})).unwrap();
+    s.execute("timeline.setTargeting", json!({"track": a1.0, "targeted": false})).unwrap();
+    s.set_playhead(v.end());
+    s.execute("edit.paste", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    q.check().unwrap();
+    assert!(!q.track(v1).unwrap().items.iter().any(|i| i.start == v.end()), "the copied V1 clip did not stay on V1");
+    assert!(q.track(v2).unwrap().items.iter().any(|i| i.start == v.end()), "the picture pasted on the target track V2");
+    assert!(q.track(a2).unwrap().items.iter().any(|i| i.start == a.end()), "the sound pasted on the target track A2");
+}
