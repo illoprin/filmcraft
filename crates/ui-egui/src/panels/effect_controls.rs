@@ -1127,6 +1127,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     paste_effects(app, clip);
                 }
                 if !open {
+                    // a collapsed effect still previews its keyframes on the header row
+                    collapsed_keyframe_preview(app, bui, r, &lane, it, e, &lx, (shown_start, shown_end), &t);
                     continue;
                 }
                 if crate::panels::audio_fx_editor::has_editor(&e.effect) {
@@ -1263,6 +1265,64 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     keys.finish(app, ui);
     run(app, ui.ctx(), actions);
     paint_effect_drag_label(ui, effect_drag.as_ref(), &t);
+}
+
+/// Premiere's collapsed-effect keyframe preview: while an effect is shut, its header row still
+/// shows its animation as small circles on the keyframe lane, one per keyframe regardless of its
+/// interpolation, so the user can see where the keys are without expanding the effect. Only the
+/// visible time range is drawn, and the count is capped so a damaged project cannot make the panel
+/// paint for ever. The dots' span is registered as one element so the preview is discoverable.
+#[allow(clippy::too_many_arguments)]
+fn collapsed_keyframe_preview(
+    app: &mut FilmcraftApp,
+    ui: &egui::Ui,
+    row: Rect,
+    lane: &Rect,
+    it: &TrackItem,
+    effect: &EffectInstance,
+    lx: &dyn Fn(Tick) -> f32,
+    timeline_range: (Tick, Tick),
+    t: &Tokens,
+) {
+    const MAX_DOTS: usize = 2048;
+    let y = row.center().y;
+    let x_range = lane.x_range();
+    let (mut painted, mut min_x, mut max_x) = (0usize, f32::MAX, f32::MIN);
+    let mut dot = |time: Tick| {
+        if painted >= MAX_DOTS {
+            return;
+        }
+        let tl = timeline_time_of(it, time);
+        if tl < timeline_range.0 || tl > timeline_range.1 {
+            return;
+        }
+        let x = lx(tl);
+        if !x_range.contains(x) {
+            return;
+        }
+        ui.painter().circle_filled(pos2(x, y), 3.5, t.keyframe_handle);
+        painted += 1;
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+    };
+    for param in effect.params.values() {
+        for kf in &param.keyframes {
+            dot(kf.time);
+        }
+    }
+    for mask in &effect.masks {
+        for id in filmcraft_project::mask::MASK_PARAMS {
+            if let Some(param) = mask.param(id) {
+                for kf in &param.keyframes {
+                    dot(kf.time);
+                }
+            }
+        }
+    }
+    if painted > 0 {
+        let rect = Rect::from_min_max(pos2(min_x - 4.0, y - 4.0), pos2(max_x + 4.0, y + 4.0));
+        app.auto.add(&format!("effectControls.collapsedKeyframes.{}", effect.effect), rect, "collapsed keyframes");
+    }
 }
 
 /// The thin line under a row, across the names, the values and the keyframe lane, so a row can be
@@ -2819,6 +2879,41 @@ mod lane_tests {
         let zoomed = (mid, it.end());
         assert!(media_fraction(&it, it.moving_source_time_at(mid), zoomed).abs() < 1e-4, "the zoom re-anchors the keyframes");
         assert!(media_fraction(&it, last, zoomed) > 0.95);
+    }
+
+    #[test]
+    /// A collapsed effect previews its keyframes as dots on its header row and registers their
+    /// span, so the animation is visible without expanding it; no keyframes, no preview.
+    fn collapsed_effect_previews_its_keyframes() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+        s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+        s.execute("effects.addKeyframe", json!({"clip": clip.0, "effect": "motion", "param": "scale"})).unwrap();
+        let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+        let motion = it.effects.iter().find(|e| e.effect == "motion").cloned().unwrap();
+        let opacity = it.effects.iter().find(|e| e.effect == "opacity").cloned().unwrap();
+        let ctx = context();
+        let t = Tokens::for_kind(Default::default());
+        let mut app = FilmcraftApp::new(s);
+        let lane = Rect::from_min_size(pos2(100.0, 0.0), vec2(200.0, 30.0));
+        let row = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, ROW_H));
+        let range = (it.start, it.end());
+        let span = (range.1.0 - range.0.0).max(1) as f64;
+        let lx = |tk: Tick| lane.min.x + ((tk.0 - range.0.0) as f64 / span) as f32 * lane.width();
+        app.auto.begin_frame();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            collapsed_keyframe_preview(&mut app, ui, row, &lane, &it, &motion, &lx, range, &t);
+        });
+        out.textures_delta.clear();
+        let preview = app.auto.find("effectControls.collapsedKeyframes.motion").expect("the collapsed preview is registered").rect;
+        assert!(preview[0] >= lane.min.x - 5.0 && preview[0] + preview[2] <= lane.max.x + 5.0, "the dots sit on the keyframe lane: {preview:?} {lane:?}");
+        app.auto.begin_frame();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            collapsed_keyframe_preview(&mut app, ui, row, &lane, &it, &opacity, &lx, range, &t);
+        });
+        out.textures_delta.clear();
+        assert!(app.auto.find("effectControls.collapsedKeyframes.opacity").is_none(), "no keyframes, no preview");
     }
 }
 
