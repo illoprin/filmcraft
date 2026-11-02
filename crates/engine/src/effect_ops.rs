@@ -222,25 +222,17 @@ fn set_interpolations(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"changed": keys.len()}))
 }
 
-/// Whether a chain keeps its required order: intrinsic effects last on a video track, first on an
-/// audio track.
-fn ordered_effects(items: &[EffectInstance], kind: TrackKind) -> bool {
-    let mut intrinsic_seen = false;
+/// Whether a chain keeps its required order: the intrinsic (fixed) effects come first, then the
+/// standard ones (see docs/architecture.md — Motion/Opacity/Volume first, then the rest). Intrinsic
+/// effects cannot be moved, so a reorder may only shuffle the standard effects after them.
+fn ordered_effects(items: &[EffectInstance]) -> bool {
     let mut standard_seen = false;
     for effect in items {
         let intrinsic = effect.def().is_some_and(|def| def.intrinsic);
-        if kind == TrackKind::Video {
-            if !intrinsic && intrinsic_seen {
-                return false;
-            }
-            intrinsic_seen |= intrinsic;
-        } else {
-            // Audio chain order is intrinsic controls, followed by insert effects.
-            if intrinsic && standard_seen {
-                return false;
-            }
-            standard_seen |= !intrinsic;
+        if intrinsic && standard_seen {
+            return false;
         }
+        standard_seen |= !intrinsic;
     }
     true
 }
@@ -252,8 +244,7 @@ fn move_effect(s: &mut Session, p: &Value) -> Result<Value> {
     let from = p.get("from").and_then(Value::as_u64).and_then(|x| usize::try_from(x).ok()).ok_or_else(|| bad(CMD, "need `from` index"))?;
     let to = p.get("to").and_then(Value::as_u64).and_then(|x| usize::try_from(x).ok()).ok_or_else(|| bad(CMD, "need `to` index"))?;
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    let (track_id, item) = q.find_item(clip).ok_or_else(|| bad(CMD, "clip does not exist"))?;
-    let track_kind = q.track(track_id).map(|t| t.kind).ok_or_else(|| bad(CMD, "track does not exist"))?;
+    let (_, item) = q.find_item(clip).ok_or_else(|| bad(CMD, "clip does not exist"))?;
     if from >= item.effects.len() || to >= item.effects.len() {
         return Err(bad(CMD, "effect index is out of range"));
     }
@@ -269,7 +260,7 @@ fn move_effect(s: &mut Session, p: &Value) -> Result<Value> {
     let mut reordered = item.effects.clone();
     let picked = reordered.remove(from);
     reordered.insert(to, picked);
-    if !ordered_effects(&reordered, track_kind) {
+    if !ordered_effects(&reordered) {
         return Err(bad(CMD, "effect cannot cross the intrinsic/standard effect boundary"));
     }
     s.edit_sequence("Reorder Effects", |sequence, _, _| {
@@ -541,13 +532,9 @@ fn paste_effects(s: &mut Session, p: &Value) -> Result<Value> {
                     }
                     continue;
                 }
-                let audio = effect.def().is_some_and(|d| d.kind == EffectKind::Audio);
-                let index = if audio {
-                    item.effects.len()
-                } else {
-                    item.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(item.effects.len())
-                };
-                item.effects.insert(index, effect);
+                // appended after the intrinsics, as `effects.apply` does: the fixed Motion / Opacity
+                // / Volume controls stay at the top of the chain (docs/architecture.md)
+                item.effects.push(effect);
                 inserted += 1;
             }
         }
@@ -864,13 +851,8 @@ fn paste_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
                 let template = template_map.get(&(key.effect.clone(), key.instance)).ok_or_else(|| bad(CMD, "missing effect template"))?;
                 let mut instance = template.def().ok_or_else(|| bad(CMD, "unknown effect template"))?.instance();
                 instance.enabled = template.enabled;
-                let audio = instance.def().is_some_and(|def| def.kind == EffectKind::Audio);
-                let index = if audio {
-                    item.effects.len()
-                } else {
-                    item.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(item.effects.len())
-                };
-                item.effects.insert(index, instance);
+                // after the intrinsics, as `effects.apply` does
+                item.effects.push(instance);
             }
             let index = effect_index(item, &key.effect, key.instance).ok_or_else(|| bad(CMD, "could not create target effect"))?;
             let effect = item.effects.get_mut(index).ok_or_else(|| bad(CMD, "target effect disappeared"))?;
