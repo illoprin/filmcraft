@@ -791,6 +791,41 @@ fn copied_effects_paste_to_the_timeline_selected_clip() {
 }
 
 #[test]
+/// A fixed effect (Motion) copies from the panel and pastes onto the Timeline-selected clip as
+/// values: the target's own Motion takes them, no second Motion appears, and it is one undo step.
+fn copied_fixed_effect_pastes_its_values_without_duplicating() {
+    let (mut d, source) = Driver::demo();
+    d.seek(1.0);
+    d.exec("effects.addKeyframe", json!({"clip": source.id, "effect": "motion", "param": "scale"}));
+    d.exec("effects.setParam", json!({"clip": source.id, "effect": "motion", "param": "scale", "value": 150.0}));
+    d.frames(2);
+    d.click("effectControls.effect.motion");
+    d.ok("ui.set", json!({"focused": "EffectControls"}));
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+    assert!(d.harness.state().session.state.effect_clipboard.is_some(), "the panel copies the fixed effect: {}", d.harness.state().ui.status);
+
+    let sequence = d.exec("sequence.inspect", json!({}));
+    let target = sequence["video"][0]["items"][1]["clip"].as_u64().expect("second video clip");
+    d.exec("timeline.select", json!({"clips": [target]}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    let panel = d.rect("panel.Timeline");
+    d.ok("ui.move", json!({"x": panel[0] + panel[2] / 2.0, "y": panel[1] + panel[3] / 2.0}));
+    d.frames(2);
+    let undo = d.undo_len();
+    d.ok("ui.key", json!({"key": "Cmd+V"}));
+    d.frames(3);
+    let item = d.harness.state().session.active_sequence().and_then(|sequence| sequence.find_item(ClipId(target))).map(|(_, item)| item).expect("target clip");
+    assert_eq!(item.effects.iter().filter(|effect| effect.effect == "motion").count(), 1, "Motion is applied, not duplicated");
+    let scale = item.effect("motion").and_then(|effect| effect.param("scale")).expect("target Motion Scale");
+    assert!(
+        scale.keyframes.iter().any(|key| matches!(key.value, filmcraft_project::ParamValue::Float(v) if (v - 150.0).abs() < 1e-6)),
+        "the copied value landed: {:?}",
+        scale.keyframes
+    );
+    assert_eq!(d.undo_len(), undo + 1, "Timeline paste is one undoable operation");
+}
+
+#[test]
 /// Copied keyframes paste into the clip selected on the Timeline.
 fn copied_keyframes_paste_to_the_timeline_selected_clip() {
     let (mut d, source) = Driver::demo();

@@ -571,16 +571,9 @@ pub(crate) fn copy_for_shortcut(app: &mut FilmcraftApp) {
 /// clip's first selected effect.
 fn copy_effect_target(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, usize)> {
     let clips = selected_clips(app);
-    let named = app
-        .ui
-        .selected_effects
-        .first()
-        .map(|selection| selection.clip)
-        .or_else(|| app.session.state.selected_effect.as_ref().map(|selection| selection.clip));
-    let (clip, item) = named
-        .and_then(|id| clips.iter().find(|(c, _, _)| *c == id))
-        .or_else(|| clips.first())
-        .map(|(c, item, _)| (*c, item.clone()))?;
+    let named =
+        app.ui.selected_effects.first().map(|selection| selection.clip).or_else(|| app.session.state.selected_effect.as_ref().map(|selection| selection.clip));
+    let (clip, item) = named.and_then(|id| clips.iter().find(|(c, _, _)| *c == id)).or_else(|| clips.first()).map(|(c, item, _)| (*c, item.clone()))?;
     let selected = selected_effect_indices(app, clip, &item.effects);
     let fallback = app.session.state.selected_effect.as_ref().filter(|selection| selection.clip == clip).and_then(|selection| selection.index(&item.effects));
     Some((clip, item, selected.first().copied().or(fallback)?))
@@ -971,6 +964,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             save_preset = true;
                             ui.close();
                         }
+                    }
+                    // intrinsic (fixed) effects copy too: pasting one applies its values to the
+                    // target's matching effect instead of adding a second, undeletable copy
+                    if !filmcraft_project::graphic::is_layer(e) {
                         let cp = ui.button(tl!("Copy Effects"));
                         app.auto.add(&format!("effectControls.effect.{fx_id}.copy"), cp.rect, "Copy Effects");
                         if cp.clicked() {
