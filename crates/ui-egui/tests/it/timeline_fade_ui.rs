@@ -111,6 +111,11 @@ impl Driver {
     fn clip_rect(&mut self, clip: u64) -> [f32; 4] {
         self.rect(&format!("timeline.clip.{clip}"))
     }
+
+    /// Whether an automation element with this id exists.
+    fn has(&mut self, id: &str) -> bool {
+        self.ok("ui.elements", json!({"prefix": id})).as_array().is_some_and(|a| a.iter().any(|e| e["id"] == id))
+    }
 }
 
 /// The first audio clip on A1 of the demo.
@@ -200,4 +205,46 @@ fn the_fade_boundary_resizes_makes_it_exponential_and_removes_it() {
     assert_eq!(dur(&d), 0, "a fade under a frame is removed");
     assert!(fade(&d).is_none());
     assert_eq!(d.span(clip), (s0, e0), "resizing the fade did not trim the clip");
+}
+
+/// Clicking a fade selects it (and only it), opens its settings in Effect Controls, and Delete
+/// removes it, leaving the clip. Same mechanism as a video transition or an audio crossfade.
+#[test]
+fn clicking_a_fade_selects_it_and_delete_removes_it() {
+    let mut d = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "EffectControls"}));
+    d.frames(3);
+    let clip = a1_clip(&d);
+    let r = d.clip_rect(clip);
+    let by = (r[2] / 4.0).round().max(12.0);
+    d.drag(pos2(r[0] + 3.0, r[1] + 3.0), pos2(r[0] + 3.0 + by, r[1] + 3.0), 20);
+    let id = {
+        let q = d.app().session.active_sequence().unwrap();
+        q.audio_tracks[0].transitions.iter().find(|x| x.to == Some(ClipId(clip)) && x.from.is_none()).expect("fade in").id
+    };
+    // the fade is a transition element for agents (with a highlight), clicking it selects it
+    let tid = format!("timeline.transition.{}", id.0);
+    assert!(d.has(&tid), "a fade is a timeline.transition element");
+    d.ok("ui.click", json!({"id": tid}));
+    d.frames(3);
+    {
+        let s = &d.app().session;
+        assert_eq!(s.state.transition_selection, vec![id], "clicking the fade selects its transition");
+        assert!(s.state.selection.is_empty(), "a transition replaces the clip selection");
+    }
+    // Effect Controls shows the transition settings
+    assert!(d.has("effectControls.transition.duration"), "Effect Controls shows the fade's settings");
+    // Delete removes it, leaving the clip
+    d.ok("ui.key", json!({"key": "Delete"}));
+    d.frames(3);
+    {
+        let q = d.app().session.active_sequence().unwrap();
+        assert!(q.audio_tracks[0].transitions.iter().all(|x| x.id != id), "Delete removes the selected fade");
+        assert!(d.app().session.state.transition_selection.is_empty());
+        assert!(q.find_item(ClipId(clip)).is_some(), "the clip stays");
+    }
+    // undo brings the fade back
+    d.ok("engine.execute", json!({"command": "edit.undo", "params": {}}));
+    d.frames(2);
+    assert!(d.app().session.active_sequence().unwrap().audio_tracks[0].transitions.iter().any(|x| x.id == id), "undo brings it back");
 }

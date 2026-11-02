@@ -172,7 +172,9 @@ starts a new one). The top-corner triangles are the elements `timeline.clip.<id>
 `.fade.out`; a gray boundary at the fade's inner edge is `….fade.in.boundary` / `.fade.out.boundary`
 (dragging it resizes the fade, under a frame removes it, Alt makes it an Exponential Fade). The clip's
 Volume line is hidden and cannot change inside a fade, and its waveform is drawn at the faded
-amplitude.
+amplitude. A one-sided fade is a transition like any other: clicking it selects it — the element
+`timeline.transition.<id>` carries the translucent accent overlay and outline — Effect Controls then
+shows its Duration / Alignment / Reverse, and Delete (or `sequence.removeTransition`) removes it.
 
 **Trim mode** (`crates/engine/src/trim.rs`): `trim.selectEditPoint` / `trim.selectNearest` enter trim
 mode (the Program monitor becomes the Trim Monitor, ids `trimMonitor.*`); `trim.monitor` returns what
