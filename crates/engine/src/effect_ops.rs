@@ -406,7 +406,9 @@ fn copy_effects(s: &mut Session, p: &Value) -> Result<Value> {
     let effects: Vec<EffectInstance> = serde_json::from_value(Value::Array(raw.clone())).map_err(|_| bad(CMD, "invalid effects"))?;
     let (mut keys, mut vertices) = (0usize, 0usize);
     for effect in &effects {
-        validate_effect(effect, CMD, false)?;
+        // The fixed Motion / Opacity / Volume effects copy too; pasting them applies their values to
+        // the target's matching effect rather than inserting a duplicate (see `paste_effects`).
+        validate_effect(effect, CMD, effect.def().is_some_and(|definition| definition.intrinsic))?;
         let (effect_keys, effect_vertices) = snapshot_counts(effect);
         keys = keys.checked_add(effect_keys).ok_or_else(|| bad(CMD, "clipboard is too large"))?;
         vertices = vertices.checked_add(effect_vertices).ok_or_else(|| bad(CMD, "clipboard is too large"))?;
@@ -441,6 +443,29 @@ pub(crate) fn paste_clipboard_effects(s: &mut Session) -> Result<Value> {
     paste_effects(s, &json!({"sourceClip": clipboard.source_clip, "sourceIn": clipboard.source_in.0, "effects": clipboard.effects, "clips": clips}))
 }
 
+/// Apply a pasted intrinsic (fixed) effect to the matching effect already on `item`: its enabled
+/// flag and parameter values (with their keyframes) replace the target's, and its masks replace the
+/// target's when the copy carries any. A copy of Motion / Opacity / Volume thus pastes its values
+/// instead of adding a second, undeletable copy. Returns whether the clip carries the effect.
+fn apply_intrinsic_effect(item: &mut TrackItem, effect: EffectInstance) -> bool {
+    let id = effect.effect.clone();
+    let def = effect.def();
+    let EffectInstance { enabled, params, masks, .. } = effect;
+    let Some(target) = item.effects.iter_mut().find(|existing| existing.effect == id && existing.def().is_some_and(|definition| definition.intrinsic)) else {
+        return false;
+    };
+    target.enabled = enabled;
+    for (param_id, param) in params {
+        if target.params.contains_key(&param_id) || def.and_then(|definition| definition.param(&param_id)).is_some() {
+            target.params.insert(param_id, param);
+        }
+    }
+    if !masks.is_empty() {
+        target.masks = masks;
+    }
+    true
+}
+
 /// `effects.paste`: apply a clipboard of effects to each target clip, retiming their keyframes to
 /// the target's source time.
 fn paste_effects(s: &mut Session, p: &Value) -> Result<Value> {
@@ -458,7 +483,7 @@ fn paste_effects(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let effects: Vec<EffectInstance> = serde_json::from_value(Value::Array(raw_effects.clone())).map_err(|_| bad(CMD, "invalid effect clipboard"))?;
     for effect in &effects {
-        validate_effect(effect, CMD, false)?;
+        validate_effect(effect, CMD, effect.def().is_some_and(|definition| definition.intrinsic))?;
     }
     let (mut total_keys, mut total_vertices) = (0usize, 0usize);
     for effect in &effects {
@@ -507,6 +532,15 @@ fn paste_effects(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
             for effect in copies {
+                // An intrinsic (fixed) effect is already on every clip: applying the copied values
+                // to the target's matching effect replaces them in place, so a paste never adds a
+                // second, undeletable Motion / Opacity / Volume.
+                if effect.def().is_some_and(|d| d.intrinsic) {
+                    if apply_intrinsic_effect(item, effect) {
+                        inserted += 1;
+                    }
+                    continue;
+                }
                 let audio = effect.def().is_some_and(|d| d.kind == EffectKind::Audio);
                 let index = if audio {
                     item.effects.len()
@@ -1174,5 +1208,85 @@ mod tests {
         assert_eq!(blur.params["blurriness"].keyframes[0].value, ParamValue::Float(33.0));
         assert!(blur.params["dimensions"].keyframes.is_empty(), "unselected lanes are not copied");
         assert_eq!(blur.params["blurriness"].value, ParamValue::Float(0.0), "unrelated static values use defaults");
+    }
+
+    #[test]
+    /// The fixed video effects (Motion, Opacity) copy and paste as values onto the target clip's own
+    /// effects: no second, undeletable copy appears, the copied parameters and keyframes land on the
+    /// target (retimed to its source time) and the whole paste is one undo step.
+    fn copying_a_fixed_video_effect_pastes_its_values_without_duplicating_it() {
+        let (mut session, clip) = fixture();
+        session.execute("playhead.set", json!({"seconds": 1.0})).expect("seek");
+        session.execute("effects.addKeyframe", json!({"clip": clip.0, "effect": "motion", "param": "scale"})).expect("add key");
+        session.execute("effects.setParam", json!({"clip": clip.0, "effect": "motion", "param": "scale", "value": 150.0})).expect("scale value");
+        session.execute("effects.setParam", json!({"clip": clip.0, "effect": "opacity", "param": "opacity", "value": 40.0})).expect("opacity value");
+        let (source_in, key_time, motion, opacity) = {
+            let item = session.active_sequence().and_then(|q| q.find_item(clip)).map(|(_, item)| item.clone()).expect("clip");
+            let motion = item.effects.iter().find(|effect| effect.effect == "motion").cloned().expect("motion");
+            let opacity = item.effects.iter().find(|effect| effect.effect == "opacity").cloned().expect("opacity");
+            let key_time = motion.params["scale"].keyframes.first().expect("keyframe").time;
+            (item.source_in, key_time, motion, opacity)
+        };
+        session.execute("effects.copy", json!({"sourceClip": clip.0, "sourceIn": source_in.0, "effects": [motion, opacity]})).expect("copy the fixed effects");
+        let second =
+            session.active_sequence().and_then(|q| q.video_tracks.first().and_then(|track| track.items.get(1))).map(|item| item.id).expect("second video clip");
+        let target_in = session.active_sequence().and_then(|q| q.find_item(second)).map(|(_, item)| item.source_in).expect("target In");
+        session.execute("timeline.select", json!({"clips": [second.0]})).expect("select the target clip");
+        let undo = session.history.undo.len();
+        let pasted = session.execute("edit.paste", json!({})).expect("paste the fixed effects");
+        assert_eq!(pasted["inserted"], 2, "both fixed effects were applied");
+        assert_eq!(session.history.undo.len(), undo + 1, "the paste is one undo step");
+
+        let item = session.active_sequence().and_then(|q| q.find_item(second)).map(|(_, item)| item.clone()).expect("target clip");
+        assert_eq!(item.effects.iter().filter(|effect| effect.effect == "motion").count(), 1, "Motion is applied, not duplicated");
+        assert_eq!(item.effects.iter().filter(|effect| effect.effect == "opacity").count(), 1, "Opacity is applied, not duplicated");
+        let motion = item.effects.iter().find(|effect| effect.effect == "motion").expect("motion");
+        assert_eq!(motion.params["scale"].keyframes.len(), 1, "the copied keyframe came along");
+        assert_eq!(motion.params["scale"].keyframes[0].value, ParamValue::Float(150.0), "the copied Scale value landed");
+        assert_eq!(
+            motion.params["scale"].keyframes[0].time,
+            Tick(key_time.0 + target_in.0 - source_in.0),
+            "the keyframe is retimed to the target's source time"
+        );
+        assert_eq!(
+            item.effects.iter().find(|effect| effect.effect == "opacity").expect("opacity").params["opacity"].value,
+            ParamValue::Float(40.0),
+            "the copied Opacity value landed"
+        );
+
+        // Pasting a fixed effect back onto its own clip changes nothing (no duplicate either).
+        session.execute("timeline.select", json!({"clips": [second.0]})).expect("keep the target selected");
+        session.execute("edit.paste", json!({})).expect("paste again");
+        let item = session.active_sequence().and_then(|q| q.find_item(second)).map(|(_, item)| item).expect("target clip");
+        assert_eq!(item.effects.iter().filter(|effect| effect.effect == "motion").count(), 1, "a second paste still does not duplicate Motion");
+        assert_eq!(item.effects.iter().find(|effect| effect.effect == "motion").expect("motion").params["scale"].keyframes[0].value, ParamValue::Float(150.0));
+    }
+
+    #[test]
+    /// The fixed audio Volume effect copies and pastes as values between audio clips.
+    fn copying_a_fixed_audio_effect_pastes_its_values() {
+        let (mut session, _clip) = fixture();
+        let (first, second) = {
+            let sequence = session.active_sequence().expect("sequence");
+            let track = sequence.audio_tracks.first().expect("audio track");
+            (track.items.first().expect("first audio clip").id, track.items.get(1).expect("second audio clip").id)
+        };
+        session.execute("effects.setParam", json!({"clip": first.0, "effect": "volume", "param": "level", "value": -12.0})).expect("level");
+        let (source_in, volume) = {
+            let item = session.active_sequence().and_then(|q| q.find_item(first)).map(|(_, item)| item.clone()).expect("source audio clip");
+            let volume = item.effects.iter().find(|effect| effect.effect == "volume").cloned().expect("volume");
+            (item.source_in, volume)
+        };
+        session.execute("effects.copy", json!({"sourceClip": first.0, "sourceIn": source_in.0, "effects": [volume]})).expect("copy Volume");
+        session.execute("timeline.select", json!({"clips": [second.0]})).expect("select the target audio clip");
+        let pasted = session.execute("edit.paste", json!({})).expect("paste Volume");
+        assert_eq!(pasted["inserted"], 1);
+        let item = session.active_sequence().and_then(|q| q.find_item(second)).map(|(_, item)| item).expect("target audio clip");
+        assert_eq!(item.effects.iter().filter(|effect| effect.effect == "volume").count(), 1, "Volume is applied, not duplicated");
+        assert_eq!(
+            item.effects.iter().find(|effect| effect.effect == "volume").expect("volume").params["level"].value,
+            ParamValue::Float(-12.0),
+            "the copied Level value landed"
+        );
     }
 }
