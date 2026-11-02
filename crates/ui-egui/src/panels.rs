@@ -2,6 +2,7 @@
 //! effects) is carried in egui temp data so the timeline/monitors can accept drops.
 
 pub mod audio_fx_editor;
+pub mod audio_spectrum;
 pub mod caption_export;
 pub mod clip_dialogs;
 pub mod clip_mismatch;
@@ -146,6 +147,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::Effects => effects::show(app, ui, rect),
         PanelKind::EffectControls => effect_controls::show(app, ui, rect),
         PanelKind::AudioMeters => meters::show(app, ui, rect),
+        PanelKind::AudioSpectrum => audio_spectrum::show(app, ui, rect),
         PanelKind::LumetriColor => lumetri::show(app, ui, rect),
         PanelKind::Properties if graphics::graphic_selected(app) => graphics::properties(app, ui, rect),
         PanelKind::Properties if text::caption_selected(app) => text::caption_properties(app, ui, rect),

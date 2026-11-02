@@ -306,6 +306,8 @@ pub struct FilmcraftApp {
     escape_cancel: bool,
     /// BS.1770 loudness of the programme as it plays, and the next sample position to feed.
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
+    /// Master-output spectrum analyzer (the Audio Spectrum panel); rebuilt when the rate changes.
+    pub(crate) spectrum: Option<filmcraft_audio_dsp::spectrum::SpectrumAnalyzer>,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
     status_seen: (String, f64),
     /// Admitted `ui.screenshot` requests and their completion slots.

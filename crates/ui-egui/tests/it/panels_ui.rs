@@ -174,7 +174,7 @@ fn every_panel_opens_from_the_window_menu() {
     let menu = d.ok("ui.menu.list", json!({}));
     let window: Vec<String> =
         menu.as_array().unwrap().iter().filter(|m| m["path"] == json!(["Window"])).filter_map(|m| m["label"].as_str().map(str::to_string)).collect();
-    for p in ["Events", "Lumetri Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Timecode"] {
+    for p in ["Events", "Lumetri Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Timecode", "Audio Spectrum"] {
         assert!(window.iter().any(|w| w == p), "{p} not in Window: {window:?}");
     }
     for (panel, key) in [
@@ -185,6 +185,7 @@ fn every_panel_opens_from_the_window_menu() {
         ("Progress", "progress.showFinished"),
         ("ReferenceMonitor", "reference.gang"),
         ("ProjectNotes", "notes.text"),
+        ("AudioSpectrum", "audioSpectrum.slope"),
     ] {
         d.ok("ui.menu.invoke", json!({"id": format!("window.panel.{panel}")}));
         d.frames(3);
@@ -192,6 +193,23 @@ fn every_panel_opens_from_the_window_menu() {
         assert!(!d.ids(key).is_empty(), "{panel}: no {key} widgets");
         assert_eq!(d.ok("ui.inspect", json!({}))["ui"]["focused"], json!(panel));
     }
+}
+
+/// The Spectrum Analyzer's settings live in `ui.panels.spectrum`, merge through `ui.set` and are
+/// read back (they drive the analyzer's slope / smoothing / peak line).
+#[test]
+fn audio_spectrum_settings_persist() {
+    let mut d = Driver::demo();
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.AudioSpectrum"}));
+    d.frames(3);
+    assert!(d.has("panel.tab.AudioSpectrum"));
+    assert!(d.has("audioSpectrum.plot"), "the plot registers its automation id");
+    d.ok("ui.set", json!({"panels": {"spectrum": {"slope": 2.0, "smoothOctaves": 0.083333336, "peakHold": false}}}));
+    d.frames(2);
+    let p = d.ui_panels();
+    assert!((p["spectrum"]["slope"].as_f64().unwrap() - 2.0).abs() < 1e-6);
+    assert!((p["spectrum"]["smoothOctaves"].as_f64().unwrap() - 0.083333336).abs() < 1e-6);
+    assert_eq!(p["spectrum"]["peakHold"], json!(false));
 }
 
 /// #284 point 3: the panel menu's Maximize Frame keeps the layout (Restore Frame brings it back),
