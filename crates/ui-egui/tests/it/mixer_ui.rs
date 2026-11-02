@@ -560,3 +560,40 @@ fn mixer_copy_and_paste_effects_between_strips() {
     assert!(d.strip("A2")["inserts"].as_array().unwrap().is_empty());
     d.snapshot("mixer-copy-paste-effects", Some("mixer."));
 }
+
+/// The Audio Track Mixer's preset buttons: save the selected track's effects (name and
+/// description) and apply a saved preset to another track through the list dialog.
+#[test]
+fn mixer_saves_and_applies_track_presets() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Audio"}));
+    d.frames(3);
+    d.exec("mixer.addInsert", json!({"strip": "A1", "effect": "amplify"}));
+    d.exec("mixer.addInsert", json!({"strip": "A1", "effect": "dynamics"}));
+    d.frames(2);
+    // Save Preset…: name it and OK
+    d.click("mixer.A1.name");
+    d.click("mixer.savePreset");
+    d.frames(2);
+    d.click("mixerPresetSave.name");
+    d.ok("ui.type", json!({"text": "Dialogue"}));
+    d.frames(1);
+    d.click("mixerPresetSave.ok");
+    d.frames(3);
+    assert!(d.ids("mixerPresetSave.").is_empty(), "the save dialog closed");
+    let presets = d.exec("mixer.listPresets", json!({}));
+    assert!(presets["presets"].as_array().unwrap().iter().any(|p| p["name"] == "Dialogue"), "{presets}");
+    // Apply Preset… on A2: pick the preset from the list and OK
+    d.click("mixer.A2.name");
+    d.click("mixer.applyPreset");
+    d.frames(2);
+    assert!(d.element("mixerPresetApply.preset.Dialogue").is_some(), "the preset row is listed");
+    d.click("mixerPresetApply.preset.Dialogue");
+    d.click("mixerPresetApply.ok");
+    d.frames(3);
+    let inserts = d.strip("A2")["inserts"].as_array().unwrap().clone();
+    assert_eq!(inserts.len(), 2, "{inserts:?}");
+    assert_eq!(inserts[0]["effect"], "amplify");
+    assert_eq!(inserts[1]["effect"], "dynamics");
+    d.snapshot("mixer-track-presets", Some("mixer."));
+}

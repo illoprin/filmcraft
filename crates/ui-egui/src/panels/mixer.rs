@@ -9,7 +9,10 @@
 //!
 //! Automation ids: `mixer.<A1|S1|Mix>.<fader|value|pan|panValue|mode|mute|solo|record|output|input|
 //! fx.<slot>|send.<slot>|meter|name>`, popup entries below them (`mixer.A1.mode.Touch`…), the
-//! effects disclosure `mixer.showEffects`, and the footer transport `mixer.transport.<command>`.
+//! effects disclosure `mixer.showEffects`, the footer transport `mixer.transport.<command>`, and the
+//! left-gutter buttons `mixer.copyEffects` / `mixer.pasteEffects` / `mixer.savePreset` /
+//! `mixer.applyPreset` (with the dialogs' `mixerPresetSave.*` and `mixerPresetApply.*`). Clicking a
+//! strip selects it (highlighted); Copy/Paste Effects and the presets act on that selected strip.
 //! The Clip Mixer uses `clipMixer.A1.<fader|value|pan|mute|solo|keyframe|mode>`, and `clipMixer.scroll`
 //! when its strips, narrowed to fit the panel, still do not fit.
 //!
@@ -403,6 +406,27 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         && let Some(s) = selected
     {
         cx.cmd("mixer.pasteInserts", json!({"strip": s.0}));
+    }
+    gy += 22.0;
+    // Save the selected track's effects as a preset (Save Preset… dialog)
+    let r = Rect::from_min_size(pos2(gx, gy), vec2(14.0, 18.0));
+    let resp = gutter_button(ui, r, Icon::Save, selected.is_some(), &t, "mixer.savePreset", tl!("Preset from selected track"));
+    app.auto.add("mixer.savePreset", r, "Preset from selected track");
+    if resp.clicked()
+        && let Some(s) = selected
+    {
+        app.ui.mixer_preset_save = Some(crate::state::MixerPresetSaveDraft { strip: s.0, name: String::new(), description: String::new() });
+    }
+    gy += 22.0;
+    // Apply a saved preset to the selected track (Apply Preset… dialog)
+    let has_presets = !app.session.track_presets.all().is_empty();
+    let r = Rect::from_min_size(pos2(gx, gy), vec2(14.0, 18.0));
+    let resp = gutter_button(ui, r, Icon::Bookmark, selected.is_some() && has_presets, &t, "mixer.applyPreset", tl!("Apply preset to selected track"));
+    app.auto.add("mixer.applyPreset", r, "Apply preset to selected track");
+    if resp.clicked()
+        && let Some(s) = selected
+    {
+        app.ui.mixer_preset_apply = Some(crate::state::MixerPresetApplyDraft { strip: s.0, selected: None });
     }
     let strips: Vec<TrackId> = seq.strip_ids().into_iter().filter(|id| !app.ui.mixer_hidden.contains(&id.0)).collect();
     let x0 = body.min.x + 18.0;
@@ -1298,6 +1322,135 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     ui.data_mut(|d| d.insert_temp(kf_id, write_kf));
     run_actions(app, &ui.ctx().clone(), acts);
+}
+
+// ------------------------------------------------------------------------------------- track presets
+
+/// The Audio Track Mixer's Save Preset and Apply Preset dialogs. Called once per frame from
+/// `panels::dialogs::show`; each is open while its draft is `Some`.
+pub fn preset_dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    save_preset_dialog(app, ctx);
+    apply_preset_dialog(app, ctx);
+}
+
+/// Save Preset… (the diskette button): a name and a description for the selected strip's effects.
+///
+/// Automation ids: `mixerPresetSave.name`, `mixerPresetSave.description`, `mixerPresetSave.ok`,
+/// `mixerPresetSave.cancel`.
+fn save_preset_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(mut d) = app.ui.mixer_preset_save.clone() else { return };
+    let mut open = true;
+    let mut close = false;
+    let mut apply = false;
+    egui::Window::new(tl!("Save Track Preset"))
+        .id(egui::Id::unique("Save Track Preset"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(340.0)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(tl!("Name:"));
+                let r = crate::widgets::accessible_name(ui.text_edit_singleline(&mut d.name), tl!("Name"));
+                app.auto.add("mixerPresetSave.name", r.rect, "Name");
+            });
+            ui.add_space(4.0);
+            ui.label(tl!("Description:"));
+            let r = crate::widgets::accessible_name(ui.text_edit_multiline(&mut d.description), tl!("Description"));
+            app.auto.add("mixerPresetSave.description", r.rect, "Description");
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let c = ui.button(tl!("Cancel"));
+                app.auto.add("mixerPresetSave.cancel", c.rect, "Cancel");
+                let o = ui.add_enabled(!d.name.trim().is_empty(), egui::Button::new(tl!("OK")));
+                app.auto.add("mixerPresetSave.ok", o.rect, "OK");
+                apply = o.clicked();
+                close = apply || c.clicked();
+            });
+        });
+    if crate::widgets::escape_closes(ctx) {
+        close = true;
+    }
+    app.ui.mixer_preset_save = if close || !open { None } else { Some(d.clone()) };
+    if apply {
+        let r = app.session.execute("mixer.savePreset", json!({"strip": d.strip, "name": d.name.trim(), "description": d.description}));
+        match r {
+            Ok(_) => app.ui.status = tlf!("Saved track preset “{name}”", name = d.name.trim()),
+            Err(e) => app.ui.status = e.to_string(),
+        }
+    }
+}
+
+/// Apply Preset… (the bookmark button): the saved track presets. Hover a row for its description,
+/// click to select it (a stripe marks the choice) and OK to apply it to the selected strip.
+///
+/// Automation ids: `mixerPresetApply.preset.<name>`, `mixerPresetApply.ok`, `mixerPresetApply.cancel`.
+fn apply_preset_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(mut d) = app.ui.mixer_preset_apply.clone() else { return };
+    let presets = app.session.track_presets.all().to_vec();
+    // nothing chosen, or the chosen preset was renamed away: preselect the first
+    if d.selected.as_ref().is_none_or(|s| !presets.iter().any(|p| &p.name == s)) {
+        d.selected = presets.first().map(|p| p.name.clone());
+    }
+    let t = app.tokens;
+    let mut open = true;
+    let mut close = false;
+    let mut apply = false;
+    egui::Window::new(tl!("Apply Track Preset"))
+        .id(egui::Id::unique("Apply Track Preset"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(320.0)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .show(ctx, |ui| {
+            if presets.is_empty() {
+                ui.label(tl!("No track presets saved yet."));
+            } else {
+                egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                    for p in &presets {
+                        let selected = d.selected.as_deref() == Some(p.name.as_str());
+                        let text = crate::i18n::t(&p.name).to_string();
+                        let r = ui.selectable_label(selected, &text);
+                        app.auto.add(&format!("mixerPresetApply.preset.{}", p.name), r.rect, &text);
+                        if selected {
+                            // a stripe marks the choice, as the plan asks
+                            let stripe = Rect::from_min_size(pos2(r.rect.min.x, r.rect.min.y + 1.0), vec2(3.0, (r.rect.height() - 2.0).max(0.0)));
+                            ui.painter().rect_filled(stripe, 1.0, t.accent);
+                        }
+                        let clicked = r.clicked();
+                        if !p.description.is_empty() {
+                            r.on_hover_text(crate::i18n::t(&p.description));
+                        }
+                        if clicked {
+                            d.selected = Some(p.name.clone());
+                        }
+                    }
+                });
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let c = ui.button(tl!("Cancel"));
+                app.auto.add("mixerPresetApply.cancel", c.rect, "Cancel");
+                let o = ui.add_enabled(d.selected.is_some(), egui::Button::new(tl!("OK")));
+                app.auto.add("mixerPresetApply.ok", o.rect, "OK");
+                apply = o.clicked();
+                close = apply || c.clicked();
+            });
+        });
+    if crate::widgets::escape_closes(ctx) {
+        close = true;
+    }
+    app.ui.mixer_preset_apply = if close || !open { None } else { Some(d.clone()) };
+    if apply
+        && let Some(name) = d.selected
+        && let Err(e) = app.session.execute("mixer.applyPreset", json!({"strip": d.strip, "preset": name}))
+    {
+        app.ui.status = e.to_string();
+    }
 }
 
 #[cfg(test)]

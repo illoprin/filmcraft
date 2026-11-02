@@ -596,6 +596,12 @@ pub struct UiState {
     /// Effect presets: the preset being renamed / the Save Preset dialog (open when Some).
     #[serde(default)]
     pub save_preset: Option<SavePresetDraft>,
+    /// Audio Track Mixer ▸ Save Preset… dialog (open when Some).
+    #[serde(default)]
+    pub mixer_preset_save: Option<MixerPresetSaveDraft>,
+    /// Audio Track Mixer ▸ Apply Preset… dialog (open when Some).
+    #[serde(default)]
+    pub mixer_preset_apply: Option<MixerPresetApplyDraft>,
     /// Open Clip / Track Fx Editor windows (graphical audio-effect editors).
     #[serde(default)]
     pub audio_fx_editors: Vec<crate::panels::audio_fx_editor::FxTarget>,
@@ -676,6 +682,23 @@ pub struct SavePresetDraft {
     pub description: String,
     /// "scale" | "anchorIn" | "anchorOut" | "none"
     pub keyframes: String,
+}
+
+/// Audio Track Mixer ▸ Save Preset…: the strip it saves and the name/description being typed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MixerPresetSaveDraft {
+    pub strip: u64,
+    pub name: String,
+    pub description: String,
+}
+
+/// Audio Track Mixer ▸ Apply Preset…: the strip it applies to and the chosen preset's name.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MixerPresetApplyDraft {
+    pub strip: u64,
+    pub selected: Option<String>,
 }
 
 /// Clip ▸ Synchronize…, Merge Clips… and Create Multi-Camera Source Sequence… share one draft;
@@ -1062,6 +1085,8 @@ impl Default for UiState {
             color_dialog: None,
             mask_pen: None,
             save_preset: None,
+            mixer_preset_save: None,
+            mixer_preset_apply: None,
             audio_fx_editors: Vec::new(),
             sync_dialog: None,
             multicam_record: true,

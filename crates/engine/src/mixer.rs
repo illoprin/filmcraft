@@ -30,6 +30,7 @@
 //! each clip's values outside the recorded range. Without a recording pass, `mixer.touch` holds the control live and `mixer.release` commits
 //! it once (a static value, or a keyframe at the playhead when the lane is automated).
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use filmcraft_project::mixer::{
@@ -40,6 +41,7 @@ use filmcraft_project::{
     AudioChannels, AutomationMode, ClipId, InputMap, ItemId, Param, ParamValue, Sequence, Track, TrackId, TrackKind, TrackSend, find_effect,
 };
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
+use std::path::{Path, PathBuf};
 
 use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, time_p, u64_p};
 use crate::{EngineError, Result, Session};
@@ -875,6 +877,139 @@ fn paste_inserts(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"pasted": take, "dropped": total - take}))
 }
 
+// ------------------------------------------------------------------------------------- track presets
+
+/// File of saved Audio Track Mixer presets, next to `effect-presets.json`.
+const TRACK_PRESETS_FILE: &str = "track-effect-presets.json";
+/// Marker of a track preset file (not read if it names something else).
+const TRACK_PRESETS_FORMAT: &str = "filmcraft.track-effect-presets";
+
+/// A saved Audio Track Mixer effect preset: what a strip's whole insert chain was at save time.
+/// Unlike an effect (clip) preset it has no clip or source time; pasting appends it unchanged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrackPreset {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    pub effects: Vec<filmcraft_project::EffectInstance>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TrackPresetFile {
+    format: String,
+    version: u32,
+    presets: Vec<TrackPreset>,
+}
+
+/// The user's saved track presets (+ where they persist). Empty until a preset is saved; the
+/// built-in effect presets are a separate library (`crate::presets`).
+#[derive(Default)]
+pub struct TrackPresetLibrary {
+    pub user: Vec<TrackPreset>,
+    dir: Option<PathBuf>,
+}
+
+impl TrackPresetLibrary {
+    /// Persist user presets in `data_dir` (and load what is there).
+    pub fn set_dir(&mut self, data_dir: &Path) {
+        self.dir = Some(data_dir.to_path_buf());
+        let path = data_dir.join(TRACK_PRESETS_FILE);
+        if let Ok(bytes) = std::fs::read(&path) {
+            match parse_track_presets(&bytes) {
+                Ok(p) => self.user = p,
+                Err(e) => log::warn!("{}: {e}", path.display()),
+            }
+        }
+    }
+    fn persist(&self) -> std::result::Result<(), String> {
+        let Some(d) = &self.dir else { return Ok(()) };
+        let _ = std::fs::create_dir_all(d);
+        let f = TrackPresetFile { format: TRACK_PRESETS_FORMAT.into(), version: 1, presets: self.user.clone() };
+        let bytes = serde_json::to_vec_pretty(&f).unwrap_or_default();
+        filmcraft_format::atomic_write(&d.join(TRACK_PRESETS_FILE), &bytes).map_err(|e| e.to_string())
+    }
+    /// Every saved preset, in save order.
+    pub fn all(&self) -> &[TrackPreset] {
+        &self.user
+    }
+    pub fn find(&self, name: &str) -> Option<TrackPreset> {
+        self.user.iter().find(|p| p.name == name).cloned()
+    }
+}
+
+fn parse_track_presets(bytes: &[u8]) -> std::result::Result<Vec<TrackPreset>, String> {
+    let f: TrackPresetFile = serde_json::from_slice(bytes).map_err(|e| format!("not a track preset file: {e}"))?;
+    if f.format != TRACK_PRESETS_FORMAT {
+        return Err(format!("not a track preset file (format `{}`)", f.format));
+    }
+    if f.version > 1 {
+        return Err(format!("track preset file version {} is newer than this build reads (1)", f.version));
+    }
+    for p in &f.presets {
+        if p.effects.iter().any(|e| e.def().is_none()) {
+            return Err(format!("preset `{}` uses an effect this build doesn't have", p.name));
+        }
+    }
+    Ok(f.presets)
+}
+
+fn track_preset_json(p: &TrackPreset) -> Value {
+    json!({
+        "name": p.name,
+        "description": p.description,
+        "effects": p.effects.iter().map(|e| e.def().map(|d| d.name).unwrap_or(e.effect.as_str()).to_string()).collect::<Vec<_>>(),
+    })
+}
+
+/// Save a strip's whole insert chain as a named track preset (`mixer.savePreset`), replacing a
+/// preset of the same name.
+fn save_track_preset(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "mixer.savePreset";
+    let id = strip_p(s, p, CMD)?;
+    let name = str_p(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(CMD, "need a `name`"))?.to_string();
+    let description = str_p(p, "description").unwrap_or("").to_string();
+    let seq = active_seq(s)?;
+    let effects = seq.strip(id).map(|t| t.effects.clone()).ok_or_else(|| bad(CMD, "no such strip"))?;
+    if effects.is_empty() {
+        return Err(bad(CMD, "the selected track has no effects to save"));
+    }
+    let preset = TrackPreset { name, description, effects };
+    let out = track_preset_json(&preset);
+    s.track_presets.user.retain(|x| x.name != preset.name);
+    s.track_presets.user.push(preset);
+    s.track_presets.persist().map_err(EngineError::Other)?;
+    Ok(out)
+}
+
+fn list_track_presets(s: &mut Session, _: &Value) -> Result<Value> {
+    Ok(json!({"presets": s.track_presets.all().iter().map(track_preset_json).collect::<Vec<_>>()}))
+}
+
+/// Apply a saved track preset to a strip (`mixer.applyPreset`): its effects are appended after the
+/// strip's own; only those that fit the free slots land, the rest are dropped.
+fn apply_track_preset(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "mixer.applyPreset";
+    let id = strip_p(s, p, CMD)?;
+    let name = str_p(p, "preset").ok_or_else(|| bad(CMD, "need `preset`"))?;
+    let preset = s.track_presets.find(name).ok_or_else(|| bad(CMD, format!("no track preset `{name}`")))?;
+    let total = preset.effects.len();
+    let have = active_seq(s)?.strip(id).map(|t| t.effects.len()).unwrap_or(0);
+    let take = total.min(pm::MAX_INSERTS.saturating_sub(have));
+    if take == 0 {
+        return Err(bad(CMD, format!("all {} effect slots are in use", pm::MAX_INSERTS)));
+    }
+    let effects: Vec<filmcraft_project::EffectInstance> = preset.effects.into_iter().take(take).collect();
+    s.edit_sequence("Apply Track Preset", move |q, _, _| {
+        q.with_strip_mut(id, |t| {
+            for e in effects {
+                t.effects.push(e);
+            }
+        })
+        .ok_or_else(|| EngineError::Other("no such strip".into()))
+    })?;
+    Ok(json!({"applied": take, "dropped": total - take}))
+}
+
 /// Move a mixer insert to another slot, on the same strip or another: the sequence's insert order
 /// is the signal chain, so this reorders a chain or moves an effect between tracks.
 fn move_insert(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1551,6 +1686,36 @@ pub fn commands() -> Vec<CommandSpec> {
             params: r#"{"strip":"A1"|"S1"|"Mix"|id}"#,
             enabled: has_seq,
             run: paste_inserts,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.listPresets",
+            label: "List Track Presets",
+            menu: &[],
+            shortcut: None,
+            params: "{}",
+            enabled: always,
+            run: list_track_presets,
+            journal: false,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.savePreset",
+            label: "Save Track Preset",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"name":str,"description":str?}"#,
+            enabled: has_seq,
+            run: save_track_preset,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.applyPreset",
+            label: "Apply Track Preset",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"preset":str}"#,
+            enabled: has_seq,
+            run: apply_track_preset,
             journal: true,
         }),
         spec(CommandDefinition {
