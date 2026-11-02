@@ -5,14 +5,16 @@
 //! Exponential Fade — and reflected in the waveform. The old transition box is not drawn for these
 //! one-sided fades (see [`is_fade_transition`]). A gray boundary line marks the fade's inner edge:
 //! the Volume line is hidden and cannot be changed inside the fade, and dragging the boundary
-//! resizes it (Alt at any point makes it an Exponential Fade, under a frame removes it).
+//! resizes it (Alt at any point makes it an Exponential Fade, under a frame removes it). A fade is
+//! a transition: clicking it selects it (accent overlay and outline), Effect Controls shows its
+//! settings and Delete removes it.
 //!
 //! Automation ids: `timeline.clip.<id>.fade.in` / `timeline.clip.<id>.fade.out` and their
 //! `.boundary`.
 
 use egui::{Color32, CursorIcon, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use filmcraft_edit::Edge;
-use filmcraft_project::{ClipId, EffectKind, Sequence, TrackId, TrackItem, TrackKind, Transition};
+use filmcraft_project::{ClipId, EffectKind, Sequence, TrackId, TrackItem, TrackKind, Transition, TransitionId};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
@@ -27,10 +29,12 @@ const HIT: f32 = 4.0;
 /// Half-width (points) of the invisible fade-boundary drag zone.
 const BOUNDARY: f32 = 4.0;
 
-/// A one-sided audio fade on a clip edge: its sequence-time range and the transition effect id
-/// (`constant_gain`, `exponential_fade`, `constant_power`), which sets the ramp's shape.
+/// A one-sided audio fade on a clip edge: its transition id, sequence-time range and the
+/// transition effect id (`constant_gain`, `exponential_fade`, `constant_power`), which sets the
+/// ramp's shape.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fade {
+    pub id: TransitionId,
     pub start: Tick,
     pub end: Tick,
     pub effect: String,
@@ -70,9 +74,9 @@ pub fn fades_on(seq: &Sequence, track: TrackId, clip: ClipId) -> (Option<Fade>, 
     let mut fout = None;
     for c in &tr.transitions {
         if is_fade(c, clip, Edge::In) {
-            fin = Some(Fade { start: c.start, end: c.end(), effect: c.effect.effect.clone() });
+            fin = Some(Fade { id: c.id, start: c.start, end: c.end(), effect: c.effect.effect.clone() });
         } else if is_fade(c, clip, Edge::Out) {
-            fout = Some(Fade { start: c.start, end: c.end(), effect: c.effect.effect.clone() });
+            fout = Some(Fade { id: c.id, start: c.start, end: c.end(), effect: c.effect.effect.clone() });
         }
     }
     (fin, fout)
@@ -157,8 +161,9 @@ fn fill_under(cp: &egui::Painter, curve: &[Pos2], bottom: f32, col: Color32) {
     cp.add(egui::Shape::mesh(mesh));
 }
 
-/// Draw the fade handles, ramps and the boundary between the clip and each fade.
-pub fn paint(app: &FilmcraftApp, p: &egui::Painter, body_rect: Rect, it: &TrackItem, t: &Tokens) {
+/// Draw the fade handles, ramps, the boundary between the clip and each fade, and the accent
+/// highlight of a selected fade (its `timeline.transition.<id>` element is registered here too).
+pub fn paint(app: &mut FilmcraftApp, p: &egui::Painter, body_rect: Rect, it: &TrackItem, t: &Tokens) {
     if body_rect.width() < 2.0 * HANDLE {
         return;
     }
@@ -168,9 +173,16 @@ pub fn paint(app: &FilmcraftApp, p: &egui::Painter, body_rect: Rect, it: &TrackI
         body_rect.min.x + (tt.0.saturating_sub(it.start.0) as f64 / it.duration.0.max(1) as f64).clamp(0.0, 1.0) as f32 * body_rect.width()
     };
     let stroke = Stroke::new(1.0, Color32::from_white_alpha(225));
+    let mut autos: Vec<(String, Rect, String)> = Vec::new();
     for (fade, fade_in) in [(fin.as_ref(), true), (fout.as_ref(), false)] {
         let Some(fade) = fade else { continue };
         let (x0, x1) = (x_of(fade.start), x_of(fade.end));
+        let region = Rect::from_min_max(pos2(x0, body_rect.min.y), pos2(x1, body_rect.max.y));
+        // a selected fade gets a translucent accent overlay under its ramp and an accent outline
+        let selected = app.session.state.transition_selection.contains(&fade.id);
+        if selected {
+            cp.rect_filled(region, 0.0, t.accent.gamma_multiply(0.22));
+        }
         let bottom = body_rect.max.y;
         // where the ramp flattens: the Volume line's height at the fade's inner end
         let flat_at = if fade_in { fade.end } else { fade.start };
@@ -203,6 +215,13 @@ pub fn paint(app: &FilmcraftApp, p: &egui::Painter, body_rect: Rect, it: &TrackI
         let (y0, y1) = (body_rect.min.y, body_rect.max.y);
         cp.add(egui::Shape::line_segment([pos2(bx + 1.0, y0), pos2(bx + 1.0, y1)], Stroke::new(1.0, Color32::from_black_alpha(150))));
         cp.add(egui::Shape::line_segment([pos2(bx, y0), pos2(bx, y1)], Stroke::new(1.0, t.text_dim)));
+        if selected {
+            cp.rect_stroke(region, 0.0, Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
+        }
+        autos.push((format!("timeline.transition.{}", fade.id.0), region, fade.effect.clone()));
+    }
+    for (id, r, l) in autos {
+        app.auto.add(&id, r, &l);
     }
     // the corner handles
     let col = Color32::from_white_alpha(235);
@@ -388,7 +407,7 @@ mod tests {
     use filmcraft_time::Tick;
 
     fn fade(start: i64, end: i64, effect: &str) -> Fade {
-        Fade { start: Tick(start), end: Tick(end), effect: effect.to_string() }
+        Fade { id: TransitionId(1), start: Tick(start), end: Tick(end), effect: effect.to_string() }
     }
 
     #[test]
