@@ -35,7 +35,7 @@ pub enum FxTarget {
 
 /// Effects that have a graphical editor.
 pub fn has_editor(effect: &str) -> bool {
-    matches!(effect, "parametric_eq" | "graphic_eq" | "graphic_eq_20" | "graphic_eq_30" | "multiband_compressor" | "dynamics_rack")
+    matches!(effect, "parametric_eq" | "graphic_eq" | "graphic_eq_20" | "graphic_eq_30" | "multiband_compressor" | "dynamics_rack" | "gate")
 }
 
 /// Whether the Track Fx Editor can edit `effect` as a mixer insert: a graphical editor, or the
@@ -250,6 +250,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 "graphic_eq" | "graphic_eq_20" | "graphic_eq_30" => graphic(ui, &mut ed),
                 "multiband_compressor" => multiband(ui, &mut ed),
                 "dynamics_rack" => dynamics(ui, &mut ed),
+                "gate" => gate(ui, &mut ed),
                 _ => generic(ui, &mut ed),
             }
             ui.separator();
@@ -635,6 +636,27 @@ fn dynamics(ui: &mut egui::Ui, ed: &mut Ed) {
             ed.toggle(ui, "soft_clip", tl!("Soft Clip"));
             ui.separator();
             ed.slider(ui, "output", tl!("Output Gain"), false);
+        });
+    });
+}
+
+/// The Gate: main controls beside the static transfer curve, with a Sidechain section.
+fn gate(ui: &mut egui::Ui, ed: &mut Ed) {
+    ui.horizontal_top(|ui| {
+        transfer_plot(ui, ed, 220.0, 0, format!("fxEditor.{}.curve", ed.fx));
+        ui.vertical(|ui| {
+            ui.set_width(330.0);
+            ed.slider(ui, "threshold", tl!("Threshold"), false);
+            ed.slider(ui, "attack", tl!("Attack"), true);
+            ed.slider(ui, "release", tl!("Release"), true);
+            ed.slider(ui, "hold", tl!("Hold"), false);
+            ed.slider(ui, "floor", tl!("Floor"), false);
+            ed.slider(ui, "gain", tl!("Gain"), false);
+            ui.separator();
+            ui.label(tl!("Sidechain"));
+            ed.slider(ui, "sc_hp", tl!("Highpass"), true);
+            ed.slider(ui, "sc_lp", tl!("Lowpass"), true);
+            ed.toggle(ui, "inverse", tl!("Inverse"));
         });
     });
 }
