@@ -10,9 +10,10 @@
 //! Automation ids: `mixer.<A1|S1|Mix>.<fader|value|pan|panValue|mode|mute|solo|record|output|input|
 //! fx.<slot>|send.<slot>|meter|name>`, popup entries below them (`mixer.A1.mode.Touch`…), the
 //! effects disclosure `mixer.showEffects`, the footer transport `mixer.transport.<command>`, and the
-//! left-gutter buttons `mixer.copyEffects` / `mixer.pasteEffects` / `mixer.savePreset` /
-//! `mixer.applyPreset` (with the dialogs' `mixerPresetSave.*` and `mixerPresetApply.*`). Clicking a
-//! strip selects it (highlighted); Copy/Paste Effects and the presets act on that selected strip.
+//! left-gutter buttons `mixer.copyEffects` / `mixer.pasteEffects` / `mixer.clearEffects` /
+//! `mixer.savePreset` / `mixer.applyPreset` (with the dialogs' `mixerPresetSave.*` and
+//! `mixerPresetApply.*`). Clicking a strip selects it (highlighted); Copy/Paste Effects and the
+//! presets act on that selected strip.
 //! The Clip Mixer uses `clipMixer.A1.<fader|value|pan|mute|solo|keyframe|mode>`, and `clipMixer.scroll`
 //! when its strips, narrowed to fit the panel, still do not fit.
 //!
@@ -427,6 +428,18 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         && let Some(s) = selected
     {
         app.ui.mixer_preset_apply = Some(crate::state::MixerPresetApplyDraft { strip: s.0, selected: None });
+    }
+    gy += 22.0;
+    // Delete every effect on the selected track
+    let has_effects = selected.is_some_and(|s| seq.strip(s).is_some_and(|t| !t.effects.is_empty()));
+    let r = Rect::from_min_size(pos2(gx, gy), vec2(14.0, 18.0));
+    let resp =
+        gutter_button(ui, r, Icon::Trash, selected.is_some() && has_effects, &t, "mixer.clearEffects", tl!("Delete all effects on selected track"));
+    app.auto.add("mixer.clearEffects", r, "Delete all effects on selected track");
+    if resp.clicked()
+        && let Some(s) = selected
+    {
+        cx.cmd("mixer.clearInserts", json!({"strip": s.0}));
     }
     let strips: Vec<TrackId> = seq.strip_ids().into_iter().filter(|id| !app.ui.mixer_hidden.contains(&id.0)).collect();
     let x0 = body.min.x + 18.0;
@@ -1398,6 +1411,7 @@ fn apply_preset_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut open = true;
     let mut close = false;
     let mut apply = false;
+    let mut delete = false;
     egui::Window::new(tl!("Apply Track Preset"))
         .id(egui::Id::unique("Apply Track Preset"))
         .open(&mut open)
@@ -1414,16 +1428,20 @@ fn apply_preset_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     for p in &presets {
                         let selected = d.selected.as_deref() == Some(p.name.as_str());
                         let text = crate::i18n::t(&p.name).to_string();
-                        let r = ui.selectable_label(selected, &text);
-                        app.auto.add(&format!("mixerPresetApply.preset.{}", p.name), r.rect, &text);
+                        // an even rounded box (the same shape as hover) marks the choice; no stripe
+                        // that would make the row look wider on its left
+                        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
                         if selected {
-                            // a stripe marks the choice, as the plan asks
-                            let stripe = Rect::from_min_size(pos2(r.rect.min.x, r.rect.min.y + 1.0), vec2(3.0, (r.rect.height() - 2.0).max(0.0)));
-                            ui.painter().rect_filled(stripe, 1.0, t.accent);
+                            ui.painter().rect_filled(r, t.radius_sm, t.accent);
+                        } else if resp.hovered() {
+                            ui.painter().rect_filled(r, t.radius_sm, t.hover);
                         }
-                        let clicked = r.clicked();
+                        let col = if selected { Color32::WHITE } else { t.text };
+                        ui.painter().text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, &text, Tokens::ui(12.0), col);
+                        app.auto.add(&format!("mixerPresetApply.preset.{}", p.name), r, &text);
+                        let clicked = resp.clicked();
                         if !p.description.is_empty() {
-                            r.on_hover_text(crate::i18n::t(&p.description));
+                            resp.on_hover_text(crate::i18n::t(&p.description));
                         }
                         if clicked {
                             d.selected = Some(p.name.clone());
@@ -1433,6 +1451,11 @@ fn apply_preset_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
+                let del = ui.add_enabled(d.selected.is_some(), egui::Button::new(tl!("Delete")));
+                app.auto.add("mixerPresetApply.delete", del.rect, "Delete");
+                if del.clicked() {
+                    delete = true;
+                }
                 let c = ui.button(tl!("Cancel"));
                 app.auto.add("mixerPresetApply.cancel", c.rect, "Cancel");
                 let o = ui.add_enabled(d.selected.is_some(), egui::Button::new(tl!("OK")));
@@ -1445,6 +1468,19 @@ fn apply_preset_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
         close = true;
     }
     app.ui.mixer_preset_apply = if close || !open { None } else { Some(d.clone()) };
+    if delete
+        && let Some(name) = d.selected.clone()
+    {
+        match app.session.execute("mixer.deletePreset", json!({"name": name})) {
+            // the list refreshes next frame; drop the now-gone choice
+            Ok(_) => {
+                if let Some(draft) = app.ui.mixer_preset_apply.as_mut() {
+                    draft.selected = None;
+                }
+            }
+            Err(e) => app.ui.status = e.to_string(),
+        }
+    }
     if apply
         && let Some(name) = d.selected
         && let Err(e) = app.session.execute("mixer.applyPreset", json!({"strip": d.strip, "preset": name}))

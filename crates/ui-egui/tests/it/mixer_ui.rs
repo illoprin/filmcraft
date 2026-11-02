@@ -597,3 +597,48 @@ fn mixer_saves_and_applies_track_presets() {
     assert_eq!(inserts[1]["effect"], "dynamics");
     d.snapshot("mixer-track-presets", Some("mixer."));
 }
+
+/// The "Delete all effects on selected track" button empties the selected strip's insert chain.
+#[test]
+fn mixer_deletes_all_effects_on_the_selected_track() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Audio"}));
+    d.frames(3);
+    d.exec("mixer.addInsert", json!({"strip": "A1", "effect": "amplify"}));
+    d.exec("mixer.addInsert", json!({"strip": "A1", "effect": "dynamics"}));
+    d.frames(2);
+    d.click("mixer.A1.name");
+    d.click("mixer.clearEffects");
+    d.frames(2);
+    assert!(d.strip("A1")["inserts"].as_array().unwrap().is_empty(), "all effects removed");
+}
+
+/// The Apply Track Preset dialog's Delete button removes the selected preset and keeps the dialog
+/// open (so another can be chosen).
+#[test]
+fn mixer_deletes_a_track_preset_from_the_dialog() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Audio"}));
+    d.frames(3);
+    d.exec("mixer.addInsert", json!({"strip": "A1", "effect": "amplify"}));
+    d.frames(2);
+    d.click("mixer.A1.name");
+    d.click("mixer.savePreset");
+    d.frames(2);
+    d.click("mixerPresetSave.name");
+    d.ok("ui.type", json!({"text": "Scratch"}));
+    d.frames(1);
+    d.click("mixerPresetSave.ok");
+    d.frames(3);
+    assert_eq!(d.exec("mixer.listPresets", json!({}))["presets"].as_array().unwrap().len(), 1);
+    d.click("mixer.applyPreset");
+    d.frames(2);
+    d.click("mixerPresetApply.preset.Scratch");
+    d.click("mixerPresetApply.delete");
+    d.frames(3);
+    assert!(d.exec("mixer.listPresets", json!({}))["presets"].as_array().unwrap().is_empty(), "the preset is gone");
+    assert!(d.element("mixerPresetApply.ok").is_some(), "the dialog stays open after Delete");
+    d.click("mixerPresetApply.cancel");
+    d.frames(2);
+    assert!(d.ids("mixerPresetApply.").is_empty(), "Cancel closes the dialog");
+}

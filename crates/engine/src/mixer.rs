@@ -877,6 +877,20 @@ fn paste_inserts(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"pasted": take, "dropped": total - take}))
 }
 
+/// Remove every insert from a strip (`mixer.clearInserts`, "Delete all effects on selected track").
+/// The automation that lives inside the effects goes with them; one undo step.
+fn clear_inserts(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = strip_p(s, p, "mixer.clearInserts")?;
+    let removed = active_seq(s)?.strip(id).map(|t| t.effects.len()).unwrap_or(0);
+    if removed == 0 {
+        return Err(bad("mixer.clearInserts", "the selected track has no effects"));
+    }
+    s.edit_sequence("Remove All Track Effects", move |q, _, _| {
+        q.with_strip_mut(id, |t| t.effects.clear()).ok_or_else(|| EngineError::Other("no such strip".into()))
+    })?;
+    Ok(json!({"removed": removed}))
+}
+
 // ------------------------------------------------------------------------------------- track presets
 
 /// File of saved Audio Track Mixer presets, next to `effect-presets.json`.
@@ -1008,6 +1022,19 @@ fn apply_track_preset(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| EngineError::Other("no such strip".into()))
     })?;
     Ok(json!({"applied": take, "dropped": total - take}))
+}
+
+/// Delete a saved track preset (`mixer.deletePreset`, the Apply Preset dialog's Delete button).
+fn delete_track_preset(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "mixer.deletePreset";
+    let name = str_p(p, "name").ok_or_else(|| bad(CMD, "need `name`"))?;
+    let before = s.track_presets.user.len();
+    s.track_presets.user.retain(|x| x.name != name);
+    if s.track_presets.user.len() == before {
+        return Err(bad(CMD, format!("no track preset `{name}`")));
+    }
+    s.track_presets.persist().map_err(EngineError::Other)?;
+    Ok(Value::Null)
 }
 
 /// Move a mixer insert to another slot, on the same strip or another: the sequence's insert order
@@ -1689,6 +1716,16 @@ pub fn commands() -> Vec<CommandSpec> {
             journal: true,
         }),
         spec(CommandDefinition {
+            id: "mixer.clearInserts",
+            label: "Delete All Track Effects",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id}"#,
+            enabled: has_seq,
+            run: clear_inserts,
+            journal: true,
+        }),
+        spec(CommandDefinition {
             id: "mixer.listPresets",
             label: "List Track Presets",
             menu: &[],
@@ -1716,6 +1753,16 @@ pub fn commands() -> Vec<CommandSpec> {
             params: r#"{"strip":"A1"|"S1"|"Mix"|id,"preset":str}"#,
             enabled: has_seq,
             run: apply_track_preset,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.deletePreset",
+            label: "Delete Track Preset",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"name":str}"#,
+            enabled: always,
+            run: delete_track_preset,
             journal: true,
         }),
         spec(CommandDefinition {
