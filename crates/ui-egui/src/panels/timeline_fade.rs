@@ -3,9 +3,12 @@
 //! `clip.fade` command, a Constant Gain transition). The fade is drawn as a ramp on the clip — its
 //! flat end meeting the clip's Volume line, straight for Constant Gain and a smooth Bezier for
 //! Exponential Fade — and reflected in the waveform. The old transition box is not drawn for these
-//! one-sided fades (see [`is_fade_transition`]).
+//! one-sided fades (see [`is_fade_transition`]). A gray boundary line marks the fade's inner edge:
+//! the Volume line is hidden and cannot be changed inside the fade, and dragging the boundary
+//! resizes it (Alt at any point makes it an Exponential Fade, under a frame removes it).
 //!
-//! Automation ids: `timeline.clip.<id>.fade.in` / `timeline.clip.<id>.fade.out`.
+//! Automation ids: `timeline.clip.<id>.fade.in` / `timeline.clip.<id>.fade.out` and their
+//! `.boundary`.
 
 use egui::{Color32, CursorIcon, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use filmcraft_edit::Edge;
@@ -21,6 +24,8 @@ use crate::theme::Tokens;
 const HANDLE: f32 = 7.0;
 /// Extra hit area around a handle (points).
 const HIT: f32 = 4.0;
+/// Half-width (points) of the invisible fade-boundary drag zone.
+const BOUNDARY: f32 = 4.0;
 
 /// A one-sided audio fade on a clip edge: its sequence-time range and the transition effect id
 /// (`constant_gain`, `exponential_fade`, `constant_power`), which sets the ramp's shape.
@@ -80,6 +85,28 @@ pub fn clip_fades(app: &FilmcraftApp, clip: ClipId) -> (Option<Fade>, Option<Fad
     fades_on(q, track, clip)
 }
 
+/// The sub-range of `clip` where its Volume line is drawn and editable: the clip minus any
+/// one-sided fade region at its edges. Inside a fade the line is hidden and its level cannot be
+/// changed — the fade, not the Volume line, owns that stretch.
+pub fn volume_range(seq: &Sequence, track: TrackId, clip: ClipId) -> (Tick, Tick) {
+    let Some(it) = seq.track(track).and_then(|t| t.item(clip)) else { return (Tick::ZERO, Tick::ZERO) };
+    let (mut lo, mut hi) = (it.start, it.end());
+    if let Some(t) = seq.track(track) {
+        for c in &t.transitions {
+            if c.effect.def().is_none_or(|d| d.kind != EffectKind::AudioTransition) {
+                continue;
+            }
+            if c.to == Some(clip) && c.from.is_none() {
+                lo = lo.max(c.end());
+            }
+            if c.from == Some(clip) && c.to.is_none() {
+                hi = hi.min(c.start);
+            }
+        }
+    }
+    (lo.min(hi), hi)
+}
+
 /// The ramp's gain at progress `q` (0..1 from the clip edge inwards) for an effect, matching
 /// `filmcraft_render::transitions::audio_gains` so the drawing is what the renderer plays.
 fn fade_curve(effect: &str, fade_in: bool, q: f32) -> f32 {
@@ -130,8 +157,8 @@ fn fill_under(cp: &egui::Painter, curve: &[Pos2], bottom: f32, col: Color32) {
     cp.add(egui::Shape::mesh(mesh));
 }
 
-/// Draw the fade handles and ramps of an audio clip drawn at `body_rect`.
-pub fn paint(app: &FilmcraftApp, p: &egui::Painter, body_rect: Rect, it: &TrackItem, _t: &Tokens) {
+/// Draw the fade handles, ramps and the boundary between the clip and each fade.
+pub fn paint(app: &FilmcraftApp, p: &egui::Painter, body_rect: Rect, it: &TrackItem, t: &Tokens) {
     if body_rect.width() < 2.0 * HANDLE {
         return;
     }
@@ -141,7 +168,7 @@ pub fn paint(app: &FilmcraftApp, p: &egui::Painter, body_rect: Rect, it: &TrackI
         body_rect.min.x + (tt.0.saturating_sub(it.start.0) as f64 / it.duration.0.max(1) as f64).clamp(0.0, 1.0) as f32 * body_rect.width()
     };
     let stroke = Stroke::new(1.0, Color32::from_white_alpha(225));
-    for (fade, fade_in) in [(fin, true), (fout, false)] {
+    for (fade, fade_in) in [(fin.as_ref(), true), (fout.as_ref(), false)] {
         let Some(fade) = fade else { continue };
         let (x0, x1) = (x_of(fade.start), x_of(fade.end));
         let bottom = body_rect.max.y;
@@ -170,6 +197,12 @@ pub fn paint(app: &FilmcraftApp, p: &egui::Painter, body_rect: Rect, it: &TrackI
         } else {
             cp.add(egui::Shape::line(curve, stroke));
         }
+        // the boundary between the clip and the fade: a gray line with a 1 px shadow (the same
+        // divider as the Volume line, so the two read alike)
+        let bx = if fade_in { x1 } else { x0 };
+        let (y0, y1) = (body_rect.min.y, body_rect.max.y);
+        cp.add(egui::Shape::line_segment([pos2(bx + 1.0, y0), pos2(bx + 1.0, y1)], Stroke::new(1.0, Color32::from_black_alpha(150))));
+        cp.add(egui::Shape::line_segment([pos2(bx, y0), pos2(bx, y1)], Stroke::new(1.0, t.text_dim)));
     }
     // the corner handles
     let col = Color32::from_white_alpha(235);
@@ -187,6 +220,18 @@ struct FadeDrag {
     edge: Edge,
     begun: bool,
     last: Option<Tick>,
+}
+
+/// The boundary at a one-sided fade's inner edge being dragged: the clip and edge, whether it has
+/// changed yet, the last (length, exponential) it sent, and whether the drag has been made an
+/// Exponential Fade (Alt held at any point).
+#[derive(Clone, Copy)]
+struct BoundaryDrag {
+    clip: ClipId,
+    edge: Edge,
+    begun: bool,
+    last: Option<(i64, bool)>,
+    exp: bool,
 }
 
 /// The fade length a pointer at `x` gives for `edge`.
@@ -210,18 +255,25 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
         return;
     }
     let drag_id = egui::Id::unique("tl-fade-drag");
+    let edge_id = egui::Id::unique("tl-fade-edge-drag");
     let held: Option<FadeDrag> = ui.data(|d| d.get_temp(drag_id));
-    if held.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        if let Some(h) = held
-            && h.begun
-        {
+    let held_edge: Option<BoundaryDrag> = ui.data(|d| d.get_temp(edge_id));
+    if (held.is_some() || held_edge.is_some()) && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if held.is_some_and(|h| h.begun) || held_edge.is_some_and(|h| h.begun) {
             let _ = app.session.execute("edit.undo", json!({}));
         }
-        ui.data_mut(|d| d.remove::<FadeDrag>(drag_id));
+        ui.data_mut(|d| {
+            d.remove::<FadeDrag>(drag_id);
+            d.remove::<BoundaryDrag>(edge_id);
+        });
         return;
     }
     let pointer = ui.input(|i| i.pointer.interact_pos());
+    let alt = ui.input(|i| i.modifiers.alt);
+    let rate = seq.settings.frame_rate;
+    let fd = rate.frame_duration();
     let mut next = held;
+    let mut next_edge = held_edge;
     let mut acts: Vec<(String, Value)> = Vec::new();
     for r in layout.rows.iter().filter(|r| r.kind == TrackKind::Audio && !r.lane) {
         let Some(tr) = seq.track(r.track).filter(|t| !t.locked) else { continue };
@@ -234,31 +286,68 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
             if b.width() < 2.0 * HANDLE {
                 continue;
             }
+            let (fin, fout) = fades_on(seq, r.track, it.id);
             for edge in [Edge::In, Edge::Out] {
+                let name = if matches!(edge, Edge::In) { "in" } else { "out" };
                 let hr = hit_rect(b, edge).intersect(area);
-                if hr.width() <= 0.0 {
+                if hr.width() > 0.0 {
+                    let resp = ui.interact(hr, egui::Id::unique(("tl-fade", it.id.0, name)), Sense::click_and_drag());
+                    app.auto.add(&format!("timeline.clip.{}.fade.{name}", it.id.0), hr, "Audio fade handle");
+                    let mine = held.filter(|h| h.clip == it.id && h.edge == edge);
+                    if resp.hovered() || mine.is_some() {
+                        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+                    }
+                    if resp.drag_started_by(egui::PointerButton::Primary) {
+                        next = Some(FadeDrag { clip: it.id, edge, begun: false, last: None });
+                    }
+                    if resp.dragged()
+                        && let (Some(h), Some(p)) = (mine, pointer)
+                    {
+                        let dur = duration_at(it, b, edge, p.x);
+                        if h.last != Some(dur) {
+                            acts.push((
+                                "clip.fade".into(),
+                                json!({"clip": it.id.0, "edge": name, "duration": dur.0, "begin": !h.begun}),
+                            ));
+                            next = Some(FadeDrag { begun: true, ..h });
+                        }
+                    }
+                }
+                // the boundary at the fade's inner edge: drag it to resize the fade. A length under
+                // one frame removes the fade; Alt held at any point makes it Exponential.
+                let fade = match edge {
+                    Edge::In => fin.as_ref(),
+                    Edge::Out => fout.as_ref(),
+                };
+                let Some(fade) = fade else { continue };
+                let bx = layout.x_of(if matches!(edge, Edge::In) { fade.end } else { fade.start });
+                let er = Rect::from_min_max(pos2(bx - BOUNDARY, b.min.y), pos2(bx + BOUNDARY, b.max.y)).intersect(area);
+                if er.width() <= 0.0 {
                     continue;
                 }
-                let name = if matches!(edge, Edge::In) { "in" } else { "out" };
-                let resp = ui.interact(hr, egui::Id::unique(("tl-fade", it.id.0, name)), Sense::click_and_drag());
-                app.auto.add(&format!("timeline.clip.{}.fade.{name}", it.id.0), hr, "Audio fade handle");
-                let mine = held.filter(|h| h.clip == it.id && h.edge == edge);
-                if resp.hovered() || mine.is_some() {
+                let eresp = ui.interact(er, egui::Id::unique(("tl-fade-edge", it.id.0, name)), Sense::click_and_drag());
+                app.auto.add(&format!("timeline.clip.{}.fade.{name}.boundary", it.id.0), er, "Audio fade boundary");
+                let mine = held_edge.filter(|h| h.clip == it.id && h.edge == edge);
+                if eresp.hovered() || mine.is_some() {
                     ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
                 }
-                if resp.drag_started_by(egui::PointerButton::Primary) {
-                    next = Some(FadeDrag { clip: it.id, edge, begun: false, last: None });
+                if eresp.drag_started_by(egui::PointerButton::Primary) {
+                    next_edge = Some(BoundaryDrag { clip: it.id, edge, begun: false, last: None, exp: false });
                 }
-                if resp.dragged()
+                if eresp.dragged()
                     && let (Some(h), Some(p)) = (mine, pointer)
                 {
-                    let dur = duration_at(it, b, edge, p.x);
-                    if h.last != Some(dur) {
+                    let raw = duration_at(it, b, edge, p.x);
+                    let hi = it.duration.max(fd);
+                    let dur = if raw < fd { Tick::ZERO } else { rate.snap_nearest(raw).clamp(fd, hi) };
+                    let exp = h.exp || alt;
+                    if h.last != Some((dur.0, exp)) {
+                        let effect = if exp { "exponential_fade" } else { "constant_gain" };
                         acts.push((
                             "clip.fade".into(),
-                            json!({"clip": it.id.0, "edge": name, "duration": dur.0, "begin": !h.begun}),
+                            json!({"clip": it.id.0, "edge": name, "duration": dur.0, "effect": effect, "begin": !h.begun}),
                         ));
-                        next = Some(FadeDrag { begun: true, ..h });
+                        next_edge = Some(BoundaryDrag { begun: true, last: Some((dur.0, exp)), exp, ..h });
                     }
                 }
             }
@@ -266,15 +355,26 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
     }
     if !ui.input(|i| i.pointer.any_down()) {
         next = None;
+        next_edge = None;
     }
-    match next {
-        Some(h) => ui.data_mut(|d| {
-            d.insert_temp(drag_id, h);
-        }),
-        None => ui.data_mut(|d| {
-            d.remove::<FadeDrag>(drag_id);
-        }),
-    }
+    ui.data_mut(|d| {
+        match next {
+            Some(h) => {
+                d.insert_temp(drag_id, h);
+            }
+            None => {
+                d.remove::<FadeDrag>(drag_id);
+            }
+        }
+        match next_edge {
+            Some(h) => {
+                d.insert_temp(edge_id, h);
+            }
+            None => {
+                d.remove::<BoundaryDrag>(edge_id);
+            }
+        }
+    });
     for (id, p) in acts {
         if let Err(e) = app.session.execute(&id, p) {
             app.ui.status = e.to_string();
