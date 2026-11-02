@@ -46,6 +46,9 @@ fn every_mixer_command_is_registered_with_a_label() {
         "mixer.moveInsert",
         "mixer.copyInserts",
         "mixer.pasteInserts",
+        "mixer.listPresets",
+        "mixer.savePreset",
+        "mixer.applyPreset",
         "mixer.addSend",
         "mixer.setSend",
         "mixer.removeSend",
@@ -726,4 +729,43 @@ fn paste_track_effects_fills_free_slots_and_drops_the_rest() {
     let before = s.project.clone();
     assert!(s.execute("mixer.pasteInserts", json!({"strip": "A2"})).is_err());
     assert_eq!(s.project, before);
+}
+
+/// Saving a strip's effects as a track preset and applying it to another strip: a separate entity
+/// (name, description, effects) that does not touch the clip effect presets.
+#[test]
+fn save_and_apply_track_presets() {
+    let mut s = demo();
+    s.execute("mixer.addInsert", json!({"strip": "A1", "effect": "graphic_eq_30"})).unwrap();
+    s.execute("mixer.addInsert", json!({"strip": "A1", "effect": "amplify"})).unwrap();
+    s.execute("mixer.setInsert", json!({"strip": "A1", "slot": 0, "params": {"gain": -12.0}})).unwrap();
+    let r = s.execute("mixer.savePreset", json!({"strip": "A1", "name": "Dialogue", "description": "Voice chain"})).unwrap();
+    assert_eq!((r["name"].as_str(), r["description"].as_str()), (Some("Dialogue"), Some("Voice chain")));
+    assert_eq!(r["effects"].as_array().unwrap().len(), 2);
+    let list = s.execute("mixer.listPresets", json!({})).unwrap();
+    assert!(list["presets"].as_array().unwrap().iter().any(|p| p["name"] == "Dialogue"), "{list}");
+    // the clip effect preset library is untouched: they are separate entities
+    assert!(s.presets.user.is_empty(), "track presets do not go into the effect presets");
+    // apply it to A2: the strip effects are appended with their settings
+    let r = s.execute("mixer.applyPreset", json!({"strip": "A2", "preset": "Dialogue"})).unwrap();
+    assert_eq!(r, json!({"applied": 2, "dropped": 0}));
+    {
+        let a2 = &s.active_sequence().unwrap().audio_tracks[1];
+        assert_eq!(a2.effects.iter().map(|e| e.effect.as_str()).collect::<Vec<_>>(), ["graphic_eq_30", "amplify"]);
+        assert_eq!(a2.effects[0].param("gain").unwrap().value, ParamValue::Float(-12.0));
+    }
+    // one undo step
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.active_sequence().unwrap().audio_tracks[1].effects.is_empty());
+    // unknown preset, and a track with nothing to save, are errors
+    assert!(s.execute("mixer.applyPreset", json!({"strip": "A2", "preset": "Nope"})).is_err());
+    assert!(s.execute("mixer.savePreset", json!({"strip": "A2", "name": "Empty"})).is_err());
+    // applying twice fills only the free slots, dropping the rest
+    s.execute("mixer.applyPreset", json!({"strip": "A2", "preset": "Dialogue"})).unwrap();
+    for _ in 0..2 {
+        s.execute("mixer.addInsert", json!({"strip": "A2", "effect": "amplify"})).unwrap();
+    }
+    let r = s.execute("mixer.applyPreset", json!({"strip": "A2", "preset": "Dialogue"})).unwrap();
+    assert_eq!(r, json!({"applied": 1, "dropped": 1}));
+    assert_eq!(s.active_sequence().unwrap().audio_tracks[1].effects.len(), 5);
 }
