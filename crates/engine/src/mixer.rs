@@ -835,6 +835,46 @@ fn remove_insert(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// Copy every insert of a strip, its full settings and keyframes, onto the application clipboard
+/// (`mixer.copyInserts`), replacing whatever was copied last. The effects are stored as they are:
+/// a track insert is sequence-level, with no clip or source time to remember.
+fn copy_inserts(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = strip_p(s, p, "mixer.copyInserts")?;
+    let seq = active_seq(s)?;
+    let effects = seq.strip(id).map(|t| t.effects.clone()).ok_or_else(|| bad("mixer.copyInserts", "no such strip"))?;
+    let count = effects.len();
+    crate::commands::set_track_effects_clipboard(s, crate::clipboard::TrackEffectsClipboard { effects });
+    Ok(json!({"count": count}))
+}
+
+/// Paste the copied track inserts onto a strip, appended after its own (`mixer.pasteInserts`).
+/// Only as many land as the strip has free slots ([`pm::MAX_INSERTS`]); the rest are dropped.
+fn paste_inserts(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = strip_p(s, p, "mixer.pasteInserts")?;
+    let Some(clip) = s.state.track_fx_clipboard.clone() else {
+        return Err(bad("mixer.pasteInserts", "no track effects have been copied"));
+    };
+    if clip.effects.is_empty() {
+        return Err(bad("mixer.pasteInserts", "the copied track has no effects"));
+    }
+    let total = clip.effects.len();
+    let have = active_seq(s)?.strip(id).map(|t| t.effects.len()).unwrap_or(0);
+    let take = total.min(pm::MAX_INSERTS.saturating_sub(have));
+    if take == 0 {
+        return Err(bad("mixer.pasteInserts", format!("all {} effect slots are in use", pm::MAX_INSERTS)));
+    }
+    let pasted: Vec<filmcraft_project::EffectInstance> = clip.effects.into_iter().take(take).collect();
+    s.edit_sequence("Paste Track Effects", move |q, _, _| {
+        q.with_strip_mut(id, |t| {
+            for e in pasted {
+                t.effects.push(e);
+            }
+        })
+        .ok_or_else(|| EngineError::Other("no such strip".into()))
+    })?;
+    Ok(json!({"pasted": take, "dropped": total - take}))
+}
+
 /// Move a mixer insert to another slot, on the same strip or another: the sequence's insert order
 /// is the signal chain, so this reorders a chain or moves an effect between tracks.
 fn move_insert(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1491,6 +1531,26 @@ pub fn commands() -> Vec<CommandSpec> {
             params: r#"{"strip":"A1"|"S1"|"Mix"|id,"slot":n,"toStrip":"A1"|id?,"toSlot":n?}"#,
             enabled: has_seq,
             run: move_insert,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.copyInserts",
+            label: "Copy Track Effects",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id}"#,
+            enabled: has_seq,
+            run: copy_inserts,
+            journal: false,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.pasteInserts",
+            label: "Paste Track Effects",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id}"#,
+            enabled: has_seq,
+            run: paste_inserts,
             journal: true,
         }),
         spec(CommandDefinition {

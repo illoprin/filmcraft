@@ -11,6 +11,14 @@ use filmcraft_project::{EffectInstance, Keyframe};
 use filmcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 
+/// Track inserts copied in the Audio Track Mixer (`mixer.copyInserts` / `mixer.pasteInserts`).
+/// Track effects are sequence-level, so there is no clip or source time to retime: pasting appends
+/// them to the selected strip unchanged, up to its free slots.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+pub struct TrackEffectsClipboard {
+    pub effects: Vec<EffectInstance>,
+}
+
 /// Effects copied in Effect Controls, with the clip and source time they came from, so a paste
 /// retimes their keyframes to each target's source time ([`Session`](crate::Session)'s
 /// `effects.paste`).
