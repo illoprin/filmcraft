@@ -715,7 +715,13 @@ pub(crate) fn can_delete_for_shortcut(app: &FilmcraftApp) -> bool {
     if !app.ui.keyframe_selection.is_empty() {
         return true;
     }
-    selected_clips(app).iter().any(|(clip, item, _)| {
+    // Effect deletion follows the session's effect selection, not only the panel's mirror of it
+    // (`app.ui.selected_effects`): selecting a mask, undoing, or clearing the selection leaves the
+    // mirror holding effects the session no longer has selected, and a repeated Delete must not
+    // remove them (#1354). The mirror can name several effects; the session's selection says one is
+    // really selected.
+    app.session.state.selected_effect.is_some()
+        && selected_clips(app).iter().any(|(clip, item, _)| {
         !removable_effect_indices(app, *clip, &item.effects, None).is_empty()
             || app
                 .session

@@ -95,7 +95,7 @@ fn main() -> eframe::Result {
     // `--test-graphics-start <mode>`. It creates the device the window would, then exits.
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let test_setup = |mode| {
-        let mut options = native_options(false);
+        let mut options = native_options(false, false);
         graphics::apply(&mut options, mode, eframe::wgpu::Backends::from_env());
         options.wgpu_options.wgpu_setup
     };

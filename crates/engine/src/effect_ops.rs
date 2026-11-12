@@ -25,7 +25,7 @@ type Run = fn(&mut Session, &Value) -> Result<Value>;
 /// One Effect Controls command spec: no menu entry or shortcut, enabled while a sequence is open,
 /// journaled, dispatched to `run`.
 fn spec(id: &'static str, label: &'static str, params: &'static str, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: crate::commands::has_seq, run, journal: true }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: crate::commands::has_seq, run, journal: true, named: crate::commands::NamedKeys::NONE }
 }
 
 /// The `effects.*` commands this module adds. Each one edits a whole set of effects or keyframes,
