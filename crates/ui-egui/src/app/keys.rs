@@ -534,7 +534,7 @@ mod exact_modifier_tests {
         let mut input = egui::InputState::default();
         input.modifiers = modifiers;
         input.events = vec![Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }];
-        app.match_shortcuts(&mut input, false, false, false)
+        app.match_shortcuts(&mut input, false, false, false, panel).0
     }
 
     /// The bug: on a Mac, Ctrl+Opt+Cmd+N ran File ▸ New ▸ Project (Cmd+Opt+N) and its "discard
