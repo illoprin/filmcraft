@@ -240,6 +240,7 @@ fn neutral_parameters_are_identity() {
         ("vr_rotate_sphere", vec![]),
         ("vr_projection", vec![]),
         ("rgb_split", vec![("amount", ParamValue::Float(0.0))]),
+        ("camera_shake", vec![("strength", ParamValue::Float(0.0))]),
         ("color_replace", vec![("target", ParamValue::Color([0.0, 0.0, 0.0, 1.0])), ("similarity", ParamValue::Float(0.0))]),
         ("clone", vec![("columns", ParamValue::Float(1.0))]),
         ("auto_align", vec![("horizontal", ParamValue::Choice(0)), ("vertical", ParamValue::Choice(0))]),
@@ -1159,6 +1160,111 @@ fn warp_stabilizer_removes_camera_jitter() {
     assert!(st.px.as_chunks::<4>().0.iter().all(|p| p[3] > 0.99), "auto-scale leaves no border");
     // the path cache is reused
     assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some());
+}
+
+/// A solid opaque frame: whatever the shake samples must be filled or not, but nothing else.
+#[test]
+fn camera_shake_edge_modes_fill_or_reveal_the_border() {
+    let img = solid(64, 48, [0.7, 0.5, 0.3]);
+    let opaque = |o: &Image| o.px.as_chunks::<4>().0.iter().all(|p| p[3] > 0.99);
+    let mut e = inst("camera_shake");
+    setf(&mut e, "amplitude_x", 1000.0);
+    setf(&mut e, "amplitude_y", 1000.0);
+    setf(&mut e, "rotation", 0.0);
+    setf(&mut e, "z_shake", 0.0);
+    setf(&mut e, "frequency", 1.0);
+    setf(&mut e, "randomness", 0.0);
+    for (mode, filled) in [(0u32, false), (1, true), (2, true), (3, true)] {
+        set(&mut e, "edge_mode", ParamValue::Choice(mode));
+        let mut revealed = false;
+        for i in 0..12 {
+            let c = FxCtx { seconds: i as f64 * 0.11 + 0.03, ..cx() };
+            let o = run("camera_shake", &e, &img, &c);
+            assert!(o.px.iter().all(|v| v.is_finite()), "mode {mode}");
+            if filled {
+                assert!(opaque(&o), "edge mode {mode} left a transparent border");
+            } else if !opaque(&o) {
+                revealed = true;
+            }
+        }
+        assert_eq!(revealed, !filled, "edge mode {mode} transparency");
+    }
+}
+
+#[test]
+fn camera_shake_rgb_split_follows_the_velocity() {
+    let img = picture(48, 32);
+    let mut e = inst("camera_shake");
+    setf(&mut e, "rotation", 0.0);
+    setf(&mut e, "z_shake", 0.0);
+    setf(&mut e, "frequency", 6.0);
+    setf(&mut e, "randomness", 0.0);
+    setf(&mut e, "rgb_split", 100.0);
+    // A still camera has no velocity, so no chromatic scatter: the frame is untouched.
+    setf(&mut e, "amplitude_x", 0.0);
+    setf(&mut e, "amplitude_y", 0.0);
+    let still = run("camera_shake", &e, &img, &cx());
+    assert!(max_diff(&still, &img) < 1e-5, "a still frame wandered");
+    // A fast jerk separates the red and blue channels.
+    setf(&mut e, "amplitude_x", 200.0);
+    setf(&mut e, "amplitude_y", 200.0);
+    let mut most = 0.0f32;
+    for i in 0..10 {
+        let c = FxCtx { seconds: i as f64 * 0.05 + 0.01, ..cx() };
+        let o = run("camera_shake", &e, &img, &c);
+        for p in o.px.as_chunks::<4>().0 {
+            most = most.max((p[0] - p[2]).abs());
+        }
+    }
+    assert!(most > 0.02, "no channel separation from the shake velocity: {most}");
+}
+
+#[test]
+fn camera_shake_motion_blur_uses_the_shutter_angle() {
+    let img = picture(64, 48);
+    let mut e = inst("camera_shake");
+    setf(&mut e, "amplitude_x", 14.0);
+    setf(&mut e, "amplitude_y", 8.0);
+    setf(&mut e, "rotation", 0.0);
+    setf(&mut e, "z_shake", 0.0);
+    setf(&mut e, "frequency", 4.0);
+    setf(&mut e, "randomness", 0.0);
+    set(&mut e, "edge_mode", ParamValue::Choice(3)); // Clamp
+    set(&mut e, "motion_blur", ParamValue::Bool(false));
+    // Over a few frame instants the open shutter integrates visible motion against the sharp frame.
+    let mut most = 0.0f32;
+    for i in 0..8 {
+        let c = FxCtx { seconds: i as f64 * 0.041 + 0.013, ..cx() };
+        let sharp = run("camera_shake", &e, &img, &c);
+        set(&mut e, "motion_blur", ParamValue::Bool(true));
+        setf(&mut e, "shutter_angle", 360.0);
+        let blurred = run("camera_shake", &e, &img, &c);
+        most = most.max(max_diff(&sharp, &blurred));
+    }
+    assert!(most > 1e-3, "shutter blur did nothing: {most}");
+    // A closed shutter integrates no motion and matches the sharp frame, with blur still enabled.
+    set(&mut e, "motion_blur", ParamValue::Bool(true));
+    setf(&mut e, "shutter_angle", 0.0);
+    let c = FxCtx { seconds: 0.013, ..cx() };
+    set(&mut e, "motion_blur", ParamValue::Bool(false));
+    let sharp = run("camera_shake", &e, &img, &c);
+    set(&mut e, "motion_blur", ParamValue::Bool(true));
+    let closed = run("camera_shake", &e, &img, &c);
+    assert!(max_diff(&sharp, &closed) < 1e-4, "a closed shutter still blurred");
+}
+
+#[test]
+fn camera_shake_seed_changes_the_pattern() {
+    let img = picture(40, 28);
+    let mut e = inst("camera_shake");
+    setf(&mut e, "amplitude_x", 40.0);
+    setf(&mut e, "amplitude_y", 30.0);
+    setf(&mut e, "randomness", 100.0);
+    let c = FxCtx { seconds: 0.23, ..cx() };
+    let a = run("camera_shake", &e, &img, &c);
+    setf(&mut e, "seed", 7.0);
+    let b = run("camera_shake", &e, &img, &c);
+    assert!(max_diff(&a, &b) > 1e-2, "seed did not change the shake");
 }
 
 /// #1381: the stabilizer's analysis kept the pyramid of every frame of the clip until all steps

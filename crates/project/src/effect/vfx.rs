@@ -40,6 +40,11 @@ pub const LIGHT_IDS: [[&str; 8]; 5] = [
 ];
 const LIGHT_GROUPS: [&str; 5] = ["Light 1", "Light 2", "Light 3", "Light 4", "Light 5"];
 
+/// Camera Shake's twirl sections in Effect Controls.
+const SHAKE_GEOMETRY: &str = "Transform & Geometry";
+const SHAKE_MOTION: &str = "Dynamics & Motion";
+const SHAKE_OPTICS: &str = "Optics & Edge Handling";
+
 fn pct(id: &'static str, label: &'static str, def: f64) -> ParamDef {
     f(id, label, def, 0.0, 100.0, "%")
 }
@@ -663,13 +668,22 @@ pub(super) fn defs() -> Vec<EffectDef> {
             "Camera Shake",
             TRANSFORM,
             vec![
-                px("amount", "Position Amount", 20.0, 1000.0, 200.0),
-                fs("rotation", "Rotation Amount", 1.0, (0.0, 45.0), (0.0, 10.0), "°", 2),
-                pct("zoom", "Zoom Amount", 5.0),
-                fs("frequency", "Frequency", 4.0, (0.1, 60.0), (0.1, 20.0), "Hz", 2),
-                fs("complexity", "Complexity", 3.0, (1.0, 6.0), (1.0, 6.0), "", 0),
-                pct("motion_blur", "Motion Blur", 0.0),
-                seed(),
+                // Transform & Geometry
+                grp(fs("strength", "Strength", 1.0, (0.0, 1.0), (0.0, 1.0), "", 2), SHAKE_GEOMETRY),
+                grp(px("amplitude_x", "Amplitude X", 30.0, 1000.0, 200.0), SHAKE_GEOMETRY),
+                grp(px("amplitude_y", "Amplitude Y", 20.0, 1000.0, 200.0), SHAKE_GEOMETRY),
+                grp(fs("rotation", "Rotation", 1.5, (0.0, 45.0), (0.0, 15.0), "°", 2), SHAKE_GEOMETRY),
+                grp(pct("z_shake", "Z-Shake", 8.0), SHAKE_GEOMETRY),
+                // Dynamics & Motion
+                grp(fs("frequency", "Frequency", 4.0, (0.1, 60.0), (0.1, 25.0), "Hz", 2), SHAKE_MOTION),
+                grp(pct("randomness", "Randomness", 60.0), SHAKE_MOTION),
+                grp(seed(), SHAKE_MOTION),
+                // Optics & Edge Handling
+                grp(b("motion_blur", "Motion Blur", false), SHAKE_OPTICS),
+                grp(fs("shutter_angle", "Shutter Angle", 180.0, (0.0, 360.0), (0.0, 360.0), "°", 0), SHAKE_OPTICS),
+                grp(pct("rgb_split", "RGB Split", 0.0), SHAKE_OPTICS),
+                grp(ch("edge_mode", "Edge Mode", &["None", "Mirror", "Tile", "Clamp"], 1), SHAKE_OPTICS),
+                grp(fs("scale", "Scale", 100.0, (1.0, 400.0), (50.0, 200.0), "%", 1), SHAKE_OPTICS),
             ],
         ),
         video(

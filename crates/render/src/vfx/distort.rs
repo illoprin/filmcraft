@@ -4,7 +4,8 @@ use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
 use super::{
-    Affine, FxCtx, Image, Tick, Vec2, affine_warp, blend_simple, bv, chv, clip_progress, cv, ease, fbm, fv, lin, noise1, offv, over, place, pv, smoothstep,
+    Affine, FxCtx, Image, Tick, Vec2, affine_warp, blend_simple, bv, chv, clip_progress, cv, ease, fbm, fv, hash01, lin, noise1, offv, over, place, pv,
+    smoothstep,
 };
 use crate::effects::{warp, warp_opt};
 
@@ -345,35 +346,151 @@ pub fn wiggle(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     place(img, c, Vec2::new(ox, oy), sc.max(1e-3), rot);
 }
 
-/// Camera Shake: layered smooth noise on position, rotation and zoom, with optional motion blur.
-pub fn camera_shake(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let freq = fv(e, "frequency", cx) as f64;
-    let seed = fv(e, "seed", cx).max(0.0) as u64;
-    let amt = (fv(e, "amount", cx) * cx.px_scale) as f64;
-    let rot = fv(e, "rotation", cx) as f64;
-    let zoom = fv(e, "zoom", cx) as f64 / 100.0;
-    let octaves = fv(e, "complexity", cx).clamp(1.0, 6.0) as usize;
-    let blur = fv(e, "motion_blur", cx) as f64 / 100.0;
-    let fps = cx.env.map_or(30.0, |env| env.frame_rate());
-    let shake = |t: f64, ch: u64| -> f64 {
-        let (mut s, mut a, mut f, mut norm) = (0.0, 1.0, 1.0, 0.0);
-        for o in 0..octaves {
-            s += noise1(t * freq * f, ch * 10 + o as u64, seed) as f64 * a;
-            norm += a;
-            a *= 0.5;
-            f *= 2.0;
+/// Edge handling for one axis coordinate (`mode` as in the effect's `edge_mode`): `None` (0) is
+/// transparent outside, `Mirror` (1) reflects, `Tile` (2) wraps, `Clamp` (3) clamps.
+#[inline]
+fn edge_index(i: isize, n: isize, mode: u32) -> Option<isize> {
+    if n <= 0 {
+        return None;
+    }
+    Some(match mode {
+        1 => {
+            let p = 2 * n;
+            let m = i.rem_euclid(p);
+            if m < n { m } else { p - 1 - m }
         }
-        s / norm * 1.6
+        2 => i.rem_euclid(n),
+        3 => i.clamp(0, n - 1),
+        _ => {
+            if i < 0 || i >= n {
+                return None;
+            }
+            i
+        }
+    })
+}
+
+/// Bilinear sample of `src` at pixel-centre coordinates with an edge mode (see [`edge_index`]).
+/// Sub-pixel positions interpolate between neighbours, so micro-shakes don't step or alias.
+fn sample_edge(src: &Image, x: f64, y: f64, mode: u32) -> [f32; 4] {
+    if src.w == 0 || src.h == 0 {
+        return [0.0; 4];
+    }
+    let fx = (x - 0.5).floor();
+    let fy = (y - 0.5).floor();
+    let tx = (x - 0.5 - fx) as f32;
+    let ty = (y - 0.5 - fy) as f32;
+    let (x0, y0) = (fx as isize, fy as isize);
+    let (w, h) = (src.w as isize, src.h as isize);
+    let mut o = [0.0f32; 4];
+    for (dx, wx) in [(0isize, 1.0 - tx), (1, tx)] {
+        if wx <= 0.0 {
+            continue;
+        }
+        let Some(xi) = edge_index(x0 + dx, w, mode) else { continue };
+        for (dy, wy) in [(0isize, 1.0 - ty), (1, ty)] {
+            if wy <= 0.0 {
+                continue;
+            }
+            let Some(yi) = edge_index(y0 + dy, h, mode) else { continue };
+            let p = src.get(xi as usize, yi as usize);
+            let k = wx * wy;
+            for c in 0..4 {
+                o[c] += p[c] * k;
+            }
+        }
+    }
+    o
+}
+
+/// Camera Shake: organic handheld camera motion. Layered procedural noise (blended with plain sine
+/// waves by Randomness) drives horizontal/vertical displacement, rotation and a zoom pulse;
+/// optional shutter-angle motion blur and a velocity-driven RGB split add the optical scatter of a
+/// fast jerk; the edge mode fills what the shake reveals before the final Scale crops the frame.
+pub fn camera_shake(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    if img.w == 0 || img.h == 0 {
+        return;
+    }
+    let k = cx.px_scale as f64;
+    let strength = (fv(e, "strength", cx) as f64).clamp(0.0, 1.0);
+    let ax = fv(e, "amplitude_x", cx) as f64 * k;
+    let ay = fv(e, "amplitude_y", cx) as f64 * k;
+    let rot = fv(e, "rotation", cx) as f64;
+    let z = fv(e, "z_shake", cx) as f64 / 100.0;
+    let freq = fv(e, "frequency", cx) as f64;
+    let rand = (fv(e, "randomness", cx) as f64 / 100.0).clamp(0.0, 1.0);
+    let seed = fv(e, "seed", cx).max(0.0) as u64;
+    let blur_on = bv(e, "motion_blur");
+    let shutter = fv(e, "shutter_angle", cx) as f64;
+    let split = (fv(e, "rgb_split", cx) as f64 / 100.0).clamp(0.0, 1.0);
+    let edge = chv(e, "edge_mode");
+    let scale = (fv(e, "scale", cx) as f64 / 100.0).max(1e-3);
+    let fps = cx.frame_rate.clamp(1.0, 240.0);
+
+    // One camera channel over time: a sine wave blended into layered (fBm) noise by Randomness.
+    let channel = |t: f64, ch: u64| -> f64 {
+        let phase = hash01(ch as i64, 11, 23, seed) as f64 * std::f64::consts::TAU;
+        let sine = (std::f64::consts::TAU * freq * t + phase).sin();
+        let noise = fbm((t * freq) as f32, ch as f32 * 5.37 + 0.5, 0.37, 4.0, seed) as f64;
+        sine * (1.0 - rand) + noise * rand
     };
-    let c = Vec2::new(img.w as f64 / 2.0, img.h as f64 / 2.0);
+    // Camera state `t` seconds into the clip: (offset x, offset y, rotation deg, zoom pulse).
+    let state = |t: f64| -> (f64, f64, f64, f64) {
+        (channel(t, 0) * ax * strength, channel(t, 1) * ay * strength, channel(t, 2) * rot * strength, channel(t, 3) * z * strength)
+    };
+    // Instantaneous camera displacement per frame (px); drives the RGB split.
+    let hh = 1.0 / (2.0 * fps);
+    let velocity = |t: f64| -> (f64, f64) {
+        let (x0, y0, _, _) = state(t - hh);
+        let (x1, y1, _, _) = state(t + hh);
+        ((x1 - x0) / (2.0 * hh) / fps, (y1 - y0) / (2.0 * hh) / fps)
+    };
+
+    let n = if blur_on && shutter > 0.5 { 7 } else { 1 };
+    let shutter_t = if n > 1 { shutter / 360.0 / fps } else { 0.0 };
     let t0 = cx.seconds;
-    let n = if blur > 0.0 { 5 } else { 1 };
-    motion_blurred(img, n, |im, k| {
-        let t = t0 + k * blur / fps;
-        let off = Vec2::new(shake(t, 0) * amt, shake(t, 1) * amt);
-        // zoom in a little with the shake so edges stay covered
-        let s = 1.0 + zoom * (0.5 + 0.5 * shake(t, 3));
-        place(im, c, off, s, shake(t, 2) * rot);
+    let (cw, chh) = (img.w as f64 / 2.0, img.h as f64 / 2.0);
+    let w = img.w;
+    let src = img.clone();
+    let inv_n = 1.0 / n as f32;
+    img.px.par_chunks_mut(w * 4).enumerate().for_each(|(py, row)| {
+        let y = py as f64 + 0.5;
+        for px in 0..w {
+            let x = px as f64 + 0.5;
+            let mut acc = [0.0f32; 4];
+            for i in 0..n {
+                let frac = if n == 1 { 0.0 } else { i as f64 / (n - 1) as f64 - 0.5 };
+                let t = t0 + frac * shutter_t;
+                let (ox, oy, r, zp) = state(t);
+                let s = (1.0 + zp).max(1e-3);
+                let rad = r.to_radians();
+                let (sr, cr) = rad.sin_cos();
+                // dest → (undo final Scale) → (undo shake) → source, so the edge mode fills the
+                // frame before Scale crops it.
+                let dx = (x - cw) / scale - ox;
+                let dy = (y - chh) / scale - oy;
+                let u = cw + (cr * dx + sr * dy) / s;
+                let v = chh + (-sr * dx + cr * dy) / s;
+                let (vx, vy) = velocity(t);
+                let speed = vx.hypot(vy);
+                let p = if split > 0.0 && speed > 1e-9 {
+                    let d = split * speed * 0.5;
+                    let (sdx, sdy) = (vx / speed * d, vy / speed * d);
+                    let pr = sample_edge(&src, u + sdx, v + sdy, edge);
+                    let pg = sample_edge(&src, u, v, edge);
+                    let pb = sample_edge(&src, u - sdx, v - sdy, edge);
+                    [pr[0], pg[1], pb[2], pg[3]]
+                } else {
+                    sample_edge(&src, u, v, edge)
+                };
+                for c in 0..4 {
+                    acc[c] += p[c];
+                }
+            }
+            for c in 0..4 {
+                row[px * 4 + c] = acc[c] * inv_n;
+            }
+        }
     });
 }
 
