@@ -160,9 +160,8 @@ fn alt_click_isolates_the_track_lock_and_targeting() {
         let q = d.harness.state().session.active_sequence().unwrap();
         (q.video_tracks[0].id, q.video_tracks[1].id, q.audio_tracks[0].id, q.audio_tracks[1].id)
     };
-    let locked = |d: &mut Driver, id: filmcraft_engine::project::TrackId| {
-        d.harness.state().session.active_sequence().unwrap().track(id).map(|t| t.locked).unwrap()
-    };
+    let locked =
+        |d: &mut Driver, id: filmcraft_engine::project::TrackId| d.harness.state().session.active_sequence().unwrap().track(id).map(|t| t.locked).unwrap();
     // lock V1 normally, then Alt-click V2: only V2 stays locked
     d.ok("ui.click", json!({"id": "timeline.track.V1.locked"}));
     d.ok("ui.click", json!({"id": "timeline.track.V2.locked", "modifiers": {"alt": true}}));

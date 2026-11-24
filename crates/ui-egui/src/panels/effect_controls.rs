@@ -722,16 +722,16 @@ pub(crate) fn can_delete_for_shortcut(app: &FilmcraftApp) -> bool {
     // really selected.
     app.session.state.selected_effect.is_some()
         && selected_clips(app).iter().any(|(clip, item, _)| {
-        !removable_effect_indices(app, *clip, &item.effects, None).is_empty()
-            || app
-                .session
-                .state
-                .selected_effect
-                .as_ref()
-                .filter(|selection| selection.clip == *clip)
-                .and_then(|selection| selection.index(&item.effects))
-                .is_some_and(|index| !removable_effect_indices(app, *clip, &item.effects, Some(index)).is_empty())
-    })
+            !removable_effect_indices(app, *clip, &item.effects, None).is_empty()
+                || app
+                    .session
+                    .state
+                    .selected_effect
+                    .as_ref()
+                    .filter(|selection| selection.clip == *clip)
+                    .and_then(|selection| selection.index(&item.effects))
+                    .is_some_and(|index| !removable_effect_indices(app, *clip, &item.effects, Some(index)).is_empty())
+        })
 }
 
 /// Del or Clear in Effect Controls: remove the selected keyframes, else the selected effects of

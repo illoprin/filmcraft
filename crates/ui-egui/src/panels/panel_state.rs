@@ -45,7 +45,8 @@ impl Default for SpectrumState {
 }
 
 /// The fractional-octave smoothing choices shown in the toolbar (label, octave width).
-pub const SPECTRUM_SMOOTHING: [(&str, f32); 5] = [("Off", 0.0), ("1/3 oct", 1.0 / 3.0), ("1/6 oct", 1.0 / 6.0), ("1/12 oct", 1.0 / 12.0), ("1/24 oct", 1.0 / 24.0)];
+pub const SPECTRUM_SMOOTHING: [(&str, f32); 5] =
+    [("Off", 0.0), ("1/3 oct", 1.0 / 3.0), ("1/6 oct", 1.0 / 6.0), ("1/12 oct", 1.0 / 12.0), ("1/24 oct", 1.0 / 24.0)];
 
 /// The last selection panel used by the item inspectors. Only the source is retained, so
 /// project changes, deletion and deselection always resolve against the current selection.

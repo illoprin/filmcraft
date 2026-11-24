@@ -363,17 +363,7 @@ fn attribute_alt_toggle(p: &mut Value, all: &[String], key: &str) {
 
 /// A Paste / Remove Attributes checkbox that also takes Alt for solo/invert across `all`.
 #[allow(clippy::too_many_arguments)]
-fn attr_check(
-    ui: &mut egui::Ui,
-    elems: &mut Elems,
-    pre: &str,
-    p: &mut Value,
-    key: &str,
-    label: &str,
-    enabled: bool,
-    alt: bool,
-    all: &[String],
-) {
+fn attr_check(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, enabled: bool, alt: bool, all: &[String]) {
     let mut v = attribute_is_on(p, key);
     let r = ui.add_enabled(enabled, egui::Checkbox::new(&mut v, label));
     push(elems, format!("{pre}.{key}"), &r, label);

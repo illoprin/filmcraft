@@ -18,8 +18,8 @@ pub(crate) mod util;
 
 pub(crate) use channel::{Amplify, Balance, ChannelVolume, Invert, Route, Routing};
 pub(crate) use declick::ClickRemover;
-pub(crate) use dynamics::{Gate, NoiseGate};
 pub use dynamics::{Compressor, Limiter};
+pub(crate) use dynamics::{Gate, NoiseGate};
 pub(crate) use eq::{ParametricEq, SimpleEq};
 pub use essential::DeEsser;
 pub(crate) use essential::{DeReverb, SpeechEnhance, StereoWidth};

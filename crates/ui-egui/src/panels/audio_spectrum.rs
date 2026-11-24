@@ -26,8 +26,10 @@ const FFT_SIZE: usize = 4096;
 /// Points in the drawn curve (one per ~2 px at a wide panel).
 const CURVE_POINTS: usize = 720;
 /// Frequencies carrying a grid line.
-const FREQ_LINES: [f32; 22] =
-    [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 800.0, 1000.0, 2000.0, 3000.0, 4000.0, 5000.0, 6000.0, 8000.0, 10000.0, 20000.0];
+const FREQ_LINES: [f32; 22] = [
+    20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 800.0, 1000.0, 2000.0, 3000.0, 4000.0, 5000.0, 6000.0, 8000.0, 10000.0,
+    20000.0,
+];
 
 /// Log-frequency position of `f` inside `r`.
 fn x_of(f: f32, r: Rect) -> f32 {
@@ -203,13 +205,14 @@ fn controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let current = app.ui.panels.spectrum.smooth_octaves;
     let cur = SPECTRUM_SMOOTHING.iter().position(|(_, v)| (*v - current).abs() < 1e-6).unwrap_or(1);
     let mut pick = None;
-    let combo = craft_ui::ComboBox::from_id_salt("spectrum-smoothing").selected_text(crate::i18n::t(SPECTRUM_SMOOTHING[cur].0)).width(84.0).show_ui(&mut hdr, |ui| {
-        for (i, (label, _)) in SPECTRUM_SMOOTHING.iter().enumerate() {
-            if ui.selectable_label(i == cur, crate::i18n::t(label)).clicked() {
-                pick = Some(i);
+    let combo =
+        craft_ui::ComboBox::from_id_salt("spectrum-smoothing").selected_text(crate::i18n::t(SPECTRUM_SMOOTHING[cur].0)).width(84.0).show_ui(&mut hdr, |ui| {
+            for (i, (label, _)) in SPECTRUM_SMOOTHING.iter().enumerate() {
+                if ui.selectable_label(i == cur, crate::i18n::t(label)).clicked() {
+                    pick = Some(i);
+                }
             }
-        }
-    });
+        });
     app.auto.add_response("audioSpectrum.smoothing", &combo.response, "Smoothing");
     if let Some(i) = pick {
         app.ui.panels.spectrum.smooth_octaves = SPECTRUM_SMOOTHING[i].1;

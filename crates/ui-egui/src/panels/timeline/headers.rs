@@ -167,8 +167,7 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         if target_resp.clicked() {
             // Alt isolates the targeting (solo), a second Alt-click inverts it.
             if ui.input(|i| i.modifiers.alt) {
-                let others_targeted =
-                    seq.video_tracks.iter().chain(seq.audio_tracks.iter()).any(|t| t.id != r.track && tg.targeted.contains(&t.id));
+                let others_targeted = seq.video_tracks.iter().chain(seq.audio_tracks.iter()).any(|t| t.id != r.track && tg.targeted.contains(&t.id));
                 let soloed = targeted && !others_targeted;
                 actions.push(("timeline.isolateTargeting".into(), json!({"track": r.track.0, "invert": soloed})));
             } else {

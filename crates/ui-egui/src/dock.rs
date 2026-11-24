@@ -515,7 +515,11 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
             hsplit(
                 Ratio(0.5),
                 tabs(&[Source, EffectControls, AudioClipMixer, Metadata, LumetriScopes, Text], 0),
-                hsplit(Ratio(0.6), tabs(&[Program], 0), tabs(&[LumetriColor, EssentialGraphics, EssentialSound, TextToSpeech, Properties, AudioTrackMixer, AudioSpectrum], 0)),
+                hsplit(
+                    Ratio(0.6),
+                    tabs(&[Program], 0),
+                    tabs(&[LumetriColor, EssentialGraphics, EssentialSound, TextToSpeech, Properties, AudioTrackMixer, AudioSpectrum], 0),
+                ),
             ),
             hsplit(Ratio(0.26), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0), bottom_editing()),
         ),

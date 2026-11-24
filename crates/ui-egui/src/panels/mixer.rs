@@ -311,8 +311,7 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let meters = poll_meters(app, ui);
     let drag_id = egui::Id::unique("mixer-insert-drag");
     let drag: Option<MixerDrag> = ui.data(|d| d.get_temp(drag_id));
-    let mut cx =
-        Ctx { t, seq, now: app.session.playhead(), recording: app.session.mixrec.active(), acts: Vec::new(), drag, drop_target: None };
+    let mut cx = Ctx { t, seq, now: app.session.playhead(), recording: app.session.mixrec.active(), acts: Vec::new(), drag, drop_target: None };
     let footer = Rect::from_min_max(pos2(rect.min.x, rect.max.y - 34.0), rect.max);
     let body = Rect::from_min_max(pos2(rect.min.x, rect.min.y + 2.0), pos2(rect.max.x, footer.min.y));
     // effects / sends disclosure at the left edge
@@ -433,8 +432,7 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Delete every effect on the selected track
     let has_effects = selected.is_some_and(|s| seq.strip(s).is_some_and(|t| !t.effects.is_empty()));
     let r = Rect::from_min_size(pos2(gx, gy), vec2(14.0, 18.0));
-    let resp =
-        gutter_button(ui, r, Icon::Trash, selected.is_some() && has_effects, &t, "mixer.clearEffects", tl!("Delete all effects on selected track"));
+    let resp = gutter_button(ui, r, Icon::Trash, selected.is_some() && has_effects, &t, "mixer.clearEffects", tl!("Delete all effects on selected track"));
     app.auto.add("mixer.clearEffects", r, "Delete all effects on selected track");
     if resp.clicked()
         && let Some(s) = selected
@@ -1468,9 +1466,7 @@ fn apply_preset_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
         close = true;
     }
     app.ui.mixer_preset_apply = if close || !open { None } else { Some(d.clone()) };
-    if delete
-        && let Some(name) = d.selected.clone()
-    {
+    if delete && let Some(name) = d.selected.clone() {
         match app.session.execute("mixer.deletePreset", json!({"name": name})) {
             // the list refreshes next frame; drop the now-gone choice
             Ok(_) => {

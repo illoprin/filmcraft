@@ -1071,7 +1071,8 @@ fn move_insert(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
-fn set_insert(s: &mut Session, p: &Value) -> Result<Value> {    let id = strip_p(s, p, "mixer.setInsert")?;
+fn set_insert(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = strip_p(s, p, "mixer.setInsert")?;
     let slot = slot_p(p, "mixer.setInsert")?;
     let p = p.clone();
     s.edit_sequence("Track Effect Settings", move |q, _, _| {
