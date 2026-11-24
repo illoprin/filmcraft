@@ -353,6 +353,10 @@ fn edge_index(i: isize, n: isize, mode: u32) -> Option<isize> {
     if n <= 0 {
         return None;
     }
+    // The common case (the sample lands inside the frame) skips the modular arithmetic.
+    if i >= 0 && i < n {
+        return Some(i);
+    }
     Some(match mode {
         1 => {
             let p = 2 * n;
@@ -372,14 +376,19 @@ fn edge_index(i: isize, n: isize, mode: u32) -> Option<isize> {
 
 /// Bilinear sample of `src` at pixel-centre coordinates with an edge mode (see [`edge_index`]).
 /// Sub-pixel positions interpolate between neighbours, so micro-shakes don't step or alias.
-fn sample_edge(src: &Image, x: f64, y: f64, mode: u32) -> [f32; 4] {
+#[inline]
+fn sample_edge(src: &Image, x: f32, y: f32, mode: u32) -> [f32; 4] {
+    // Clamp is the compositor's own sampler.
+    if mode == 3 {
+        return src.sample_bilinear_clamped(x, y);
+    }
     if src.w == 0 || src.h == 0 {
         return [0.0; 4];
     }
     let fx = (x - 0.5).floor();
     let fy = (y - 0.5).floor();
-    let tx = (x - 0.5 - fx) as f32;
-    let ty = (y - 0.5 - fy) as f32;
+    let tx = x - 0.5 - fx;
+    let ty = y - 0.5 - fy;
     let (x0, y0) = (fx as isize, fy as isize);
     let (w, h) = (src.w as isize, src.h as isize);
     let mut o = [0.0f32; 4];
@@ -403,14 +412,27 @@ fn sample_edge(src: &Image, x: f64, y: f64, mode: u32) -> [f32; 4] {
     o
 }
 
+/// One motion-blur sub-sample of the camera path, precomputed once per frame: the inverse map from
+/// output pixels to source pixels (`u = a·x + b·y + c`, `v = d·x + e·y + f`) and the RGB split
+/// half-offset. The camera state and its procedural noise depend only on time, never on the pixel,
+/// so evaluating them per pixel was the cost.
+#[derive(Clone, Copy)]
+struct ShakeSample {
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    e: f32,
+    f: f32,
+    sx: f32,
+    sy: f32,
+}
+
 /// Camera Shake: organic handheld camera motion. Layered procedural noise (blended with plain sine
 /// waves by Randomness) drives horizontal/vertical displacement, rotation and a zoom pulse;
 /// optional shutter-angle motion blur and a velocity-driven RGB split add the optical scatter of a
 /// fast jerk; the edge mode fills what the shake reveals before the final Scale crops the frame.
 pub fn camera_shake(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    if img.w == 0 || img.h == 0 {
-        return;
-    }
     let k = cx.px_scale as f64;
     let strength = (fv(e, "strength", cx) as f64).clamp(0.0, 1.0);
     let ax = fv(e, "amplitude_x", cx) as f64 * k;
@@ -426,6 +448,13 @@ pub fn camera_shake(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let edge = chv(e, "edge_mode");
     let scale = (fv(e, "scale", cx) as f64 / 100.0).max(1e-3);
     let fps = cx.frame_rate.clamp(1.0, 240.0);
+
+    let w = img.w;
+    let h = img.h;
+    // No shake at all and no reframing: leave the frame untouched.
+    if w == 0 || h == 0 || (strength == 0.0 && (scale - 1.0).abs() < 1e-12) {
+        return;
+    }
 
     // One camera channel over time: a sine wave blended into layered (fBm) noise by Randomness.
     let channel = |t: f64, ch: u64| -> f64 {
@@ -446,39 +475,48 @@ pub fn camera_shake(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         ((x1 - x0) / (2.0 * hh) / fps, (y1 - y0) / (2.0 * hh) / fps)
     };
 
+    // The camera path depends only on time: evaluate the handful of motion-blur samples once, as
+    // plain affine maps, before touching any pixel.
     let n = if blur_on && shutter > 0.5 { 7 } else { 1 };
     let shutter_t = if n > 1 { shutter / 360.0 / fps } else { 0.0 };
     let t0 = cx.seconds;
-    let (cw, chh) = (img.w as f64 / 2.0, img.h as f64 / 2.0);
-    let w = img.w;
+    let (cw, chh) = (w as f64 / 2.0, h as f64 / 2.0);
+    let mut samples = Vec::with_capacity(n);
+    for i in 0..n {
+        let frac = if n == 1 { 0.0 } else { i as f64 / (n - 1) as f64 - 0.5 };
+        let t = t0 + frac * shutter_t;
+        let (ox, oy, r, zp) = state(t);
+        let inv_s = 1.0 / (1.0 + zp).max(1e-3);
+        let (sr, cr) = r.to_radians().sin_cos();
+        // dest → (undo final Scale) → (undo shake) → source; the edge mode fills the frame before
+        // Scale crops it. Folding the inverse map into coefficients keeps the pixel loop to a few
+        // multiply-adds.
+        let a = cr * inv_s / scale;
+        let b = sr * inv_s / scale;
+        let d = -sr * inv_s / scale;
+        let ee = cr * inv_s / scale;
+        let c = cw - a * cw - b * chh - (cr * ox + sr * oy) * inv_s;
+        let f = chh - d * cw - ee * chh - (-sr * ox + cr * oy) * inv_s;
+        // RGB split offset = velocity per frame × split/2 (∝ speed; zero when the camera is still).
+        let (vx, vy) = velocity(t);
+        let (sx, sy) = if split > 0.0 { (vx * split * 0.5, vy * split * 0.5) } else { (0.0, 0.0) };
+        samples.push(ShakeSample { a: a as f32, b: b as f32, c: c as f32, d: d as f32, e: ee as f32, f: f as f32, sx: sx as f32, sy: sy as f32 });
+    }
+
     let src = img.clone();
     let inv_n = 1.0 / n as f32;
     img.px.par_chunks_mut(w * 4).enumerate().for_each(|(py, row)| {
-        let y = py as f64 + 0.5;
+        let y = py as f32 + 0.5;
         for px in 0..w {
-            let x = px as f64 + 0.5;
+            let x = px as f32 + 0.5;
             let mut acc = [0.0f32; 4];
-            for i in 0..n {
-                let frac = if n == 1 { 0.0 } else { i as f64 / (n - 1) as f64 - 0.5 };
-                let t = t0 + frac * shutter_t;
-                let (ox, oy, r, zp) = state(t);
-                let s = (1.0 + zp).max(1e-3);
-                let rad = r.to_radians();
-                let (sr, cr) = rad.sin_cos();
-                // dest → (undo final Scale) → (undo shake) → source, so the edge mode fills the
-                // frame before Scale crops it.
-                let dx = (x - cw) / scale - ox;
-                let dy = (y - chh) / scale - oy;
-                let u = cw + (cr * dx + sr * dy) / s;
-                let v = chh + (-sr * dx + cr * dy) / s;
-                let (vx, vy) = velocity(t);
-                let speed = vx.hypot(vy);
-                let p = if split > 0.0 && speed > 1e-9 {
-                    let d = split * speed * 0.5;
-                    let (sdx, sdy) = (vx / speed * d, vy / speed * d);
-                    let pr = sample_edge(&src, u + sdx, v + sdy, edge);
+            for s in &samples {
+                let u = s.a * x + s.b * y + s.c;
+                let v = s.d * x + s.e * y + s.f;
+                let p = if s.sx != 0.0 || s.sy != 0.0 {
+                    let pr = sample_edge(&src, u + s.sx, v + s.sy, edge);
                     let pg = sample_edge(&src, u, v, edge);
-                    let pb = sample_edge(&src, u - sdx, v - sdy, edge);
+                    let pb = sample_edge(&src, u - s.sx, v - s.sy, edge);
                     [pr[0], pg[1], pb[2], pg[3]]
                 } else {
                     sample_edge(&src, u, v, edge)
