@@ -5,9 +5,10 @@
 //! Exponential Fade — and reflected in the waveform. The old transition box is not drawn for these
 //! one-sided fades (see [`is_fade_transition`]). A gray boundary line marks the fade's inner edge:
 //! the Volume line is hidden and cannot be changed inside the fade, and dragging the boundary
-//! resizes it (Alt at any point makes it an Exponential Fade, under a frame removes it). A fade is
-//! a transition: clicking it selects it (accent overlay and outline), Effect Controls shows its
-//! settings and Delete removes it.
+//! resizes it: a plain drag keeps the fade's shape, pressing Alt toggles it between a Constant
+//! Gain and an Exponential Fade, and a length under a frame removes it. A fade is a transition:
+//! clicking it selects it (accent overlay and outline), Effect Controls shows its settings and
+//! Delete removes it.
 //!
 //! Automation ids: `timeline.clip.<id>.fade.in` / `timeline.clip.<id>.fade.out` and their
 //! `.boundary`.
@@ -169,9 +170,7 @@ pub fn paint(app: &mut FilmcraftApp, p: &egui::Painter, body_rect: Rect, it: &Tr
     }
     let (fin, fout) = clip_fades(app, it.id);
     let cp = p.with_clip_rect(body_rect.intersect(p.clip_rect()));
-    let x_of = |tt: Tick| {
-        body_rect.min.x + (tt.0.saturating_sub(it.start.0) as f64 / it.duration.0.max(1) as f64).clamp(0.0, 1.0) as f32 * body_rect.width()
-    };
+    let x_of = |tt: Tick| body_rect.min.x + (tt.0.saturating_sub(it.start.0) as f64 / it.duration.0.max(1) as f64).clamp(0.0, 1.0) as f32 * body_rect.width();
     let stroke = Stroke::new(1.0, Color32::from_white_alpha(225));
     let mut autos: Vec<(String, Rect, String)> = Vec::new();
     for (fade, fade_in) in [(fin.as_ref(), true), (fout.as_ref(), false)] {
@@ -242,8 +241,9 @@ struct FadeDrag {
 }
 
 /// The boundary at a one-sided fade's inner edge being dragged: the clip and edge, whether it has
-/// changed yet, the last (length, exponential) it sent, and whether the drag has been made an
-/// Exponential Fade (Alt held at any point).
+/// changed yet, the last (length, exponential) it sent, the fade's current shape (`exp`: an
+/// Exponential Fade) and whether Alt was held on the previous frame. A plain resize keeps `exp`;
+/// pressing Alt toggles it (linear ↔ exponential).
 #[derive(Clone, Copy)]
 struct BoundaryDrag {
     clip: ClipId,
@@ -251,6 +251,7 @@ struct BoundaryDrag {
     begun: bool,
     last: Option<(i64, bool)>,
     exp: bool,
+    alt_prev: bool,
 }
 
 /// The fade length a pointer at `x` gives for `edge`.
@@ -261,6 +262,25 @@ fn duration_at(it: &TrackItem, b: Rect, edge: Edge, x: f32) -> Tick {
         Edge::In => d,
         Edge::Out => it.duration - d,
     }
+}
+
+/// One dragged frame of a fade's boundary: the `clip.fade` params it gives (nothing changed →
+/// `None`), and the drag state to keep. A plain resize keeps the fade's shape; pressing Alt toggles
+/// it between Constant Gain and Exponential Fade (edge-triggered, once per press).
+fn boundary_frame(it: &TrackItem, b: Rect, edge: Edge, h: BoundaryDrag, p: Pos2, alt: bool, rate: filmcraft_time::FrameRate) -> (Option<Value>, BoundaryDrag) {
+    let fd = rate.frame_duration();
+    let raw = duration_at(it, b, edge, p.x);
+    let hi = it.duration.max(fd);
+    let dur = if raw < fd { Tick::ZERO } else { rate.snap_nearest(raw).clamp(fd, hi) };
+    let exp = if alt && !h.alt_prev { !h.exp } else { h.exp };
+    let send = h.last != Some((dur.0, exp));
+    let action = send.then(|| {
+        let name = if matches!(edge, Edge::In) { "in" } else { "out" };
+        let effect = if exp { "exponential_fade" } else { "constant_gain" };
+        json!({"clip": it.id.0, "edge": name, "duration": dur.0, "effect": effect, "begin": !h.begun})
+    });
+    let last = if send { Some((dur.0, exp)) } else { h.last };
+    (action, BoundaryDrag { begun: h.begun || send, last, exp, alt_prev: alt, ..h })
 }
 
 /// Hover and drag of the fade handles, run after the Timeline's own interaction so the handles sit
@@ -290,7 +310,6 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
     let pointer = ui.input(|i| i.pointer.interact_pos());
     let alt = ui.input(|i| i.modifiers.alt);
     let rate = seq.settings.frame_rate;
-    let fd = rate.frame_duration();
     let mut next = held;
     let mut next_edge = held_edge;
     let mut acts: Vec<(String, Value)> = Vec::new();
@@ -324,16 +343,14 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                     {
                         let dur = duration_at(it, b, edge, p.x);
                         if h.last != Some(dur) {
-                            acts.push((
-                                "clip.fade".into(),
-                                json!({"clip": it.id.0, "edge": name, "duration": dur.0, "begin": !h.begun}),
-                            ));
+                            acts.push(("clip.fade".into(), json!({"clip": it.id.0, "edge": name, "duration": dur.0, "begin": !h.begun})));
                             next = Some(FadeDrag { begun: true, ..h });
                         }
                     }
                 }
                 // the boundary at the fade's inner edge: drag it to resize the fade. A length under
-                // one frame removes the fade; Alt held at any point makes it Exponential.
+                // one frame removes the fade; a plain resize keeps the shape, pressing Alt toggles
+                // it between Constant Gain and Exponential Fade.
                 let fade = match edge {
                     Edge::In => fin.as_ref(),
                     Edge::Out => fout.as_ref(),
@@ -351,23 +368,18 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                     ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
                 }
                 if eresp.drag_started_by(egui::PointerButton::Primary) {
-                    next_edge = Some(BoundaryDrag { clip: it.id, edge, begun: false, last: None, exp: false });
+                    // start from the fade's own shape, so a resize never changes it by itself
+                    let exp = fade.effect == "exponential_fade";
+                    next_edge = Some(BoundaryDrag { clip: it.id, edge, begun: false, last: None, exp, alt_prev: false });
                 }
                 if eresp.dragged()
                     && let (Some(h), Some(p)) = (mine, pointer)
                 {
-                    let raw = duration_at(it, b, edge, p.x);
-                    let hi = it.duration.max(fd);
-                    let dur = if raw < fd { Tick::ZERO } else { rate.snap_nearest(raw).clamp(fd, hi) };
-                    let exp = h.exp || alt;
-                    if h.last != Some((dur.0, exp)) {
-                        let effect = if exp { "exponential_fade" } else { "constant_gain" };
-                        acts.push((
-                            "clip.fade".into(),
-                            json!({"clip": it.id.0, "edge": name, "duration": dur.0, "effect": effect, "begin": !h.begun}),
-                        ));
-                        next_edge = Some(BoundaryDrag { begun: true, last: Some((dur.0, exp)), exp, ..h });
+                    let (action, next_state) = boundary_frame(it, b, edge, h, p, alt, rate);
+                    if let Some(params) = action {
+                        acts.push(("clip.fade".into(), params));
                     }
+                    next_edge = Some(next_state);
                 }
             }
         }

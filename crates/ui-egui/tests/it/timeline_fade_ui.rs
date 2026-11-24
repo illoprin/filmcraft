@@ -207,6 +207,44 @@ fn the_fade_boundary_resizes_makes_it_exponential_and_removes_it() {
     assert_eq!(d.span(clip), (s0, e0), "resizing the fade did not trim the clip");
 }
 
+/// A plain boundary drag resizes an Exponential Fade without changing its type; pressing Alt
+/// toggles the type (Exponential back to Constant Gain). Changing the length alone never does.
+#[test]
+fn resizing_a_fade_keeps_its_type() {
+    let mut d = Driver::demo();
+    let clip = a1_clip(&d);
+    let r = d.clip_rect(clip);
+    let by = (r[2] / 4.0).round().max(12.0);
+    // a fade in, then Alt it into an Exponential Fade
+    d.drag(pos2(r[0] + 3.0, r[1] + 3.0), pos2(r[0] + 3.0 + by, r[1] + 3.0), 20);
+    let fade = |d: &Driver| -> Option<String> {
+        let q = d.app().session.active_sequence().unwrap();
+        q.audio_tracks[0].transitions.iter().find(|x| x.to == Some(ClipId(clip)) && x.from.is_none()).map(|x| x.effect.effect.clone())
+    };
+    let dur = |d: &Driver| -> i64 {
+        let q = d.app().session.active_sequence().unwrap();
+        q.audio_tracks[0].transitions.iter().find(|x| x.to == Some(ClipId(clip)) && x.from.is_none()).map(|x| x.duration.0).unwrap_or(0)
+    };
+    let b = format!("timeline.clip.{clip}.fade.in.boundary");
+    let mid = |d: &mut Driver| {
+        let br = d.rect(&b);
+        pos2(br[0] + br[2] / 2.0, br[1] + br[3] / 2.0)
+    };
+    let m = mid(&mut d);
+    d.drag_mods(m, pos2(m.x + by, m.y), 20, egui::Modifiers::ALT);
+    assert_eq!(fade(&d).as_deref(), Some("exponential_fade"), "Alt made it an Exponential Fade");
+    // a plain resize grows it and leaves the type alone
+    let d0 = dur(&d);
+    let m = mid(&mut d);
+    d.drag(m, pos2(m.x + by, m.y), 20);
+    assert!(dur(&d) > d0, "a plain resize grows the fade: {d0} -> {}", dur(&d));
+    assert_eq!(fade(&d).as_deref(), Some("exponential_fade"), "a plain resize keeps the Exponential Fade");
+    // Alt toggles it back to a Constant Gain
+    let m = mid(&mut d);
+    d.drag_mods(m, pos2(m.x + by, m.y), 20, egui::Modifiers::ALT);
+    assert_eq!(fade(&d).as_deref(), Some("constant_gain"), "Alt toggles it back to Constant Gain");
+}
+
 /// Clicking a fade selects it (and only it), opens its settings in Effect Controls, and Delete
 /// removes it, leaving the clip. Same mechanism as a video transition or an audio crossfade.
 #[test]
