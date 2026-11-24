@@ -239,8 +239,8 @@ fn bitcrusher() -> Vec<ParamDef> {
 /// drift and a stereo phase spread. Controls are grouped as the two LFOs plus character/output.
 fn tape_wiggle() -> Vec<ParamDef> {
     let mut v = Vec::new();
-    v.extend(group("Wow", vec![num("wow_rate", "Wow Rate", 0.6, 0.1, 3.0, "Hz", 2), pct("wow_depth", "Wow Depth", 30.0, 0.0, 100.0)]));
-    v.extend(group("Flutter", vec![num("flutter_rate", "Flutter Rate", 8.0, 4.0, 15.0, "Hz", 2), pct("flutter_depth", "Flutter Depth", 15.0, 0.0, 100.0)]));
+    v.extend(group("Wow", vec![num("wow_rate", "Wow Rate", 0.6, 0.1, 3.0, "Hz", 2), pct("wow_depth", "Wow Depth", 30.0, 0.0, 500.0)]));
+    v.extend(group("Flutter", vec![num("flutter_rate", "Flutter Rate", 8.0, 4.0, 15.0, "Hz", 2), pct("flutter_depth", "Flutter Depth", 15.0, 0.0, 500.0)]));
     v.extend(group(
         "Character & Output",
         vec![pct("randomness", "Randomness", 20.0, 0.0, 100.0), pct("stereo_width", "Stereo Width", 50.0, 0.0, 100.0), pct("mix", "Mix", 100.0, 0.0, 100.0)],
@@ -760,6 +760,11 @@ mod tests {
         }
         for id in ["randomness", "stereo_width", "mix"] {
             assert_eq!(group(id), Some("Character & Output"), "{id}");
+        }
+        // The wow and flutter depths may be pushed past 100 % to mangle the tape.
+        for id in ["wow_depth", "flutter_depth"] {
+            let k = &d.param(id).unwrap().kind;
+            assert!(matches!(k, crate::effect::ParamKind::Float { soft_max, .. } if *soft_max > 100.0), "{id} must allow more than 100 %");
         }
     }
 }

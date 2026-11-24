@@ -561,10 +561,14 @@ const WOW_SWING_MS: f32 = 2.5;
 const FLUTTER_SWING_MS: f32 = 0.35;
 /// Random-drift delay swing at Randomness 100 %, in milliseconds.
 const DRIFT_SWING_MS: f32 = 1.2;
-/// Base read distance before modulation, in milliseconds (headroom for every component).
-const TAPE_BASE_MS: f32 = 5.0;
-/// Longest delay the lines must hold, in milliseconds.
-const TAPE_MAX_MS: f32 = 15.0;
+/// Smallest base read distance, in milliseconds.
+const TAPE_MIN_BASE_MS: f32 = 5.0;
+/// Headroom the base keeps beyond the current modulation swing, in milliseconds.
+const TAPE_BASE_MARGIN_MS: f32 = 1.0;
+/// Longest delay the lines must hold, in milliseconds (covers the deepest depth at 500 %).
+const TAPE_MAX_MS: f32 = 34.0;
+/// Ramp of the base read distance when the modulation swing changes, in milliseconds.
+const TAPE_BASE_RAMP_MS: f32 = 60.0;
 /// Fresh drift targets per second for [`SmoothNoise`].
 const DRIFT_HZ: f32 = 5.0;
 
@@ -583,7 +587,8 @@ fn bipolar(phase: f64) -> f32 {
 /// fast flutter LFO and a band-limited random drift, bending the pitch exactly as uneven tape
 /// transport does. `stereo_width` offsets the right channel's LFO phase and decorrelates its
 /// drift, like two-track tape. Reads are linearly interpolated (alias-free) and the per-sample
-/// path is a handful of multiplies and two sines.
+/// path is a handful of multiplies and two sines. The depth controls may exceed 100 % to mangle
+/// the tape; the base read distance follows the swing so it never runs past the line.
 pub struct TapeWiggle {
     pv: ParamValues,
     sr: f32,
@@ -594,15 +599,18 @@ pub struct TapeWiggle {
     drift: Vec<SmoothNoise>,
     /// Shared drift, so Stereo Width 0 % keeps the two channels identical.
     drift_base: SmoothNoise,
+    /// Base read distance in samples; tracks the modulation swing so deep settings stay inside
+    /// the line, and glides when the depths change.
+    base: Smoothed,
     mix: Smoothed,
 }
 
 impl TapeWiggle {
     pub const PARAMS: &'static [ParamSpec] = &[
         ParamSpec::new("wow_rate", "Wow Rate", 0.1, 3.0, 0.6, Unit::Hertz),
-        ParamSpec::new("wow_depth", "Wow Depth", 0.0, 100.0, 30.0, Unit::Percent),
+        ParamSpec::new("wow_depth", "Wow Depth", 0.0, 500.0, 30.0, Unit::Percent),
         ParamSpec::new("flutter_rate", "Flutter Rate", 4.0, 15.0, 8.0, Unit::Hertz),
-        ParamSpec::new("flutter_depth", "Flutter Depth", 0.0, 100.0, 15.0, Unit::Percent),
+        ParamSpec::new("flutter_depth", "Flutter Depth", 0.0, 500.0, 15.0, Unit::Percent),
         ParamSpec::new("randomness", "Randomness", 0.0, 100.0, 20.0, Unit::Percent),
         ParamSpec::new("stereo_width", "Stereo Width", 0.0, 100.0, 50.0, Unit::Percent),
         ParamSpec::new("mix", "Mix", 0.0, 100.0, 100.0, Unit::Percent),
@@ -619,6 +627,7 @@ impl TapeWiggle {
             flutter: Lfo::default(),
             drift: (0..ch as u64).map(|k| SmoothNoise::new(tape_seed(k), DRIFT_HZ, sample_rate)).collect(),
             drift_base: SmoothNoise::new(tape_seed(u64::MAX), DRIFT_HZ, sample_rate),
+            base: Smoothed::with_ms(TAPE_MIN_BASE_MS * 0.001 * sample_rate, sample_rate, TAPE_BASE_RAMP_MS),
             mix: Smoothed::with_ms(1.0, sample_rate, SM),
         };
         s.apply_params(true);
@@ -626,8 +635,14 @@ impl TapeWiggle {
     }
 
     fn apply_params(&mut self, snap: bool) {
+        // The base keeps room for the whole swing, so even deep settings stay inside the delay
+        // line instead of clamping; it glides when the depths change.
+        let swing_ms =
+            (WOW_SWING_MS * self.pv.v("wow_depth") + FLUTTER_SWING_MS * self.pv.v("flutter_depth")) / 100.0 + DRIFT_SWING_MS * self.pv.v("randomness") / 100.0;
+        self.base.set((swing_ms + TAPE_BASE_MARGIN_MS).max(TAPE_MIN_BASE_MS) * 0.001 * self.sr);
         self.mix.set(self.pv.v("mix") / 100.0);
         if snap {
+            self.base.snap();
             self.mix.snap();
         }
     }
@@ -644,6 +659,7 @@ impl AudioEffect for TapeWiggle {
             *n = SmoothNoise::new(tape_seed(k as u64), DRIFT_HZ, sr);
         }
         self.drift_base = SmoothNoise::new(tape_seed(u64::MAX), DRIFT_HZ, sr);
+        self.base.snap();
         self.mix.snap();
     }
     fn process(&mut self, channels: &mut [&mut [f32]]) {
@@ -653,7 +669,6 @@ impl AudioEffect for TapeWiggle {
             return;
         }
         let per_ms = self.sr * 0.001;
-        let base = TAPE_BASE_MS * per_ms;
         // Modulation amplitudes in milliseconds; the depth knobs scale the swings.
         let wow_amp = WOW_SWING_MS * self.pv.v("wow_depth") / 100.0;
         let flutter_amp = FLUTTER_SWING_MS * self.pv.v("flutter_depth") / 100.0;
@@ -666,6 +681,7 @@ impl AudioEffect for TapeWiggle {
         let (use_wow, use_flutter) = (wow_amp > 0.0, flutter_amp > 0.0);
         for i in 0..n {
             let mix = self.mix.tick();
+            let base = self.base.tick();
             let base_wave = self.drift_base.tick();
             for ch in 0..nch {
                 let x = channels[ch][i];

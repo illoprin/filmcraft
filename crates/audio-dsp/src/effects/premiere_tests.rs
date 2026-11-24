@@ -578,9 +578,12 @@ fn tape_wiggle_wow_and_flutter_bend_pitch() {
     let wow = tone_db(fx("tape_wiggle", &[("wow_depth", 100.0), ("wow_rate", 1.0), ("flutter_depth", 0.0), ("randomness", 0.0)]).as_mut(), 1000.0, 0.5);
     let flutter =
         tone_db(fx("tape_wiggle", &[("wow_depth", 0.0), ("flutter_depth", 100.0), ("flutter_rate", 10.0), ("randomness", 0.0)]).as_mut(), 1000.0, 0.5);
+    let deep = tone_db(fx("tape_wiggle", &[("wow_depth", 300.0), ("wow_rate", 1.0), ("flutter_depth", 0.0), ("randomness", 0.0)]).as_mut(), 1000.0, 0.5);
     assert!(flat > -0.5, "no modulation should pass the tone, got {flat}");
     assert!(wow < flat - 3.0, "wow {wow} dB should smear the tone from {flat} dB");
     assert!(flutter < flat - 3.0, "flutter {flutter} dB should smear the tone from {flat} dB");
+    // Depth past 100 % is allowed and bends the pitch further.
+    assert!(deep < wow, "depth 300 % {deep} dB should bend past 100 % {wow} dB");
 }
 
 #[test]
