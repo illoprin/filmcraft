@@ -227,6 +227,39 @@ impl Prng {
     }
 }
 
+/// Smooth low-frequency noise: a fresh uniform value every `1/rate` seconds, linearly
+/// interpolated from the previous one, so it wanders in `[-1, 1]` without steps. Feeds the random
+/// drift that keeps a tape-style modulation from sounding mechanically periodic.
+#[derive(Clone, Debug)]
+pub(crate) struct SmoothNoise {
+    from: f32,
+    to: f32,
+    t: f32,
+    step: f32,
+    rng: Prng,
+}
+
+impl SmoothNoise {
+    /// `rate` is the number of fresh values per second (the interpolation limits the effective
+    /// bandwidth to about half of it).
+    pub(crate) fn new(seed: u64, rate: f32, sr: f32) -> Self {
+        let mut rng = Prng::new(seed);
+        let (from, to) = (rng.uniform(), rng.uniform());
+        SmoothNoise { from, to, t: 0.0, step: (sr / rate.max(1e-3)).max(1.0), rng }
+    }
+    #[inline]
+    pub(crate) fn tick(&mut self) -> f32 {
+        let x = self.from + (self.to - self.from) * (self.t / self.step);
+        self.t += 1.0;
+        if self.t >= self.step {
+            self.t -= self.step;
+            self.from = self.to;
+            self.to = self.rng.uniform();
+        }
+        x
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +310,28 @@ mod tests {
         for p in near.chain(sums) {
             assert_eq!(wrap_phase(p).to_bits(), p.rem_euclid(1.0).to_bits(), "{p:e}");
         }
+    }
+
+    #[test]
+    fn smooth_noise_wanders_within_range_and_is_seeded() {
+        let mut a = SmoothNoise::new(11, 5.0, 48000.0);
+        let mut b = SmoothNoise::new(11, 5.0, 48000.0);
+        let mut prev = a.tick();
+        let first_b = b.tick();
+        assert_eq!(prev.to_bits(), first_b.to_bits(), "same seed, same sequence");
+        let (mut lo, mut hi, mut max_step) = (prev, prev, 0.0f32);
+        for _ in 0..48000 {
+            let x = a.tick();
+            assert_eq!(x.to_bits(), b.tick().to_bits(), "same seed, same sequence");
+            assert!(x.abs() <= 1.0, "{x}");
+            max_step = max_step.max((x - prev).abs());
+            lo = lo.min(x);
+            hi = hi.max(x);
+            prev = x;
+        }
+        // Interpolated between held values, so it moves in tiny steps yet still spans a range.
+        assert!(max_step < 0.01, "not smooth: {max_step}");
+        assert!(hi - lo > 1.0, "did not wander: {lo}..{hi}");
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! Delay. All modulated delays read with linear interpolation; feedback loops are bounded
 //! (|g| < 1, or saturating for the Analog Delay).
 
-use super::util::{AllPass1, DelayLine, Envelope, Lfo, OnePole, coef, uni_sine, uni_tri, wrap_phase};
+use super::util::{AllPass1, DelayLine, Envelope, Lfo, OnePole, SmoothNoise, coef, uni_sine, uni_tri, wrap_phase};
 use crate::{AudioEffect, ParamSpec, ParamValues, Smoothed, Unit, block_len, db_to_gain, param_plumbing};
 
 const SM: f32 = 20.0;
@@ -549,6 +549,144 @@ impl AudioEffect for MultitapDelay {
                 }
                 channels[ch][i] = x + mix * (wet - x);
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------- tape wiggle
+
+/// Wow delay swing at Wow Depth 100 %, in milliseconds.
+const WOW_SWING_MS: f32 = 2.5;
+/// Flutter delay swing at Flutter Depth 100 %, in milliseconds.
+const FLUTTER_SWING_MS: f32 = 0.35;
+/// Random-drift delay swing at Randomness 100 %, in milliseconds.
+const DRIFT_SWING_MS: f32 = 1.2;
+/// Base read distance before modulation, in milliseconds (headroom for every component).
+const TAPE_BASE_MS: f32 = 5.0;
+/// Longest delay the lines must hold, in milliseconds.
+const TAPE_MAX_MS: f32 = 15.0;
+/// Fresh drift targets per second for [`SmoothNoise`].
+const DRIFT_HZ: f32 = 5.0;
+
+/// Deterministic per-source seed, stable across construction and [`TapeWiggle::reset`].
+fn tape_seed(k: u64) -> u64 {
+    0x7A9E_5EED_u64 ^ k.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+/// Bipolar sine of a phase in cycles.
+#[inline]
+fn bipolar(phase: f64) -> f32 {
+    (std::f64::consts::TAU * phase).sin() as f32
+}
+
+/// Tape wow and flutter: the read distance of a short delay line is swept by a slow wow LFO, a
+/// fast flutter LFO and a band-limited random drift, bending the pitch exactly as uneven tape
+/// transport does. `stereo_width` offsets the right channel's LFO phase and decorrelates its
+/// drift, like two-track tape. Reads are linearly interpolated (alias-free) and the per-sample
+/// path is a handful of multiplies and two sines.
+pub struct TapeWiggle {
+    pv: ParamValues,
+    sr: f32,
+    lines: Vec<DelayLine>,
+    wow: Lfo,
+    flutter: Lfo,
+    /// Per-channel drift, blended with [`TapeWiggle::drift_base`] by the stereo width.
+    drift: Vec<SmoothNoise>,
+    /// Shared drift, so Stereo Width 0 % keeps the two channels identical.
+    drift_base: SmoothNoise,
+    mix: Smoothed,
+}
+
+impl TapeWiggle {
+    pub const PARAMS: &'static [ParamSpec] = &[
+        ParamSpec::new("wow_rate", "Wow Rate", 0.1, 3.0, 0.6, Unit::Hertz),
+        ParamSpec::new("wow_depth", "Wow Depth", 0.0, 100.0, 30.0, Unit::Percent),
+        ParamSpec::new("flutter_rate", "Flutter Rate", 4.0, 15.0, 8.0, Unit::Hertz),
+        ParamSpec::new("flutter_depth", "Flutter Depth", 0.0, 100.0, 15.0, Unit::Percent),
+        ParamSpec::new("randomness", "Randomness", 0.0, 100.0, 20.0, Unit::Percent),
+        ParamSpec::new("stereo_width", "Stereo Width", 0.0, 100.0, 50.0, Unit::Percent),
+        ParamSpec::new("mix", "Mix", 0.0, 100.0, 100.0, Unit::Percent),
+    ];
+
+    pub fn new(sample_rate: f32, channels: usize) -> Self {
+        let ch = channels.max(1);
+        let max = (TAPE_MAX_MS * 0.001 * sample_rate) as usize + 4;
+        let mut s = TapeWiggle {
+            pv: ParamValues::new(Self::PARAMS),
+            sr: sample_rate,
+            lines: vec![DelayLine::new(max); ch],
+            wow: Lfo::default(),
+            flutter: Lfo::default(),
+            drift: (0..ch as u64).map(|k| SmoothNoise::new(tape_seed(k), DRIFT_HZ, sample_rate)).collect(),
+            drift_base: SmoothNoise::new(tape_seed(u64::MAX), DRIFT_HZ, sample_rate),
+            mix: Smoothed::with_ms(1.0, sample_rate, SM),
+        };
+        s.apply_params(true);
+        s
+    }
+
+    fn apply_params(&mut self, snap: bool) {
+        self.mix.set(self.pv.v("mix") / 100.0);
+        if snap {
+            self.mix.snap();
+        }
+    }
+}
+
+impl AudioEffect for TapeWiggle {
+    param_plumbing!("tape_wiggle");
+    fn reset(&mut self) {
+        self.lines.iter_mut().for_each(DelayLine::reset);
+        self.wow.reset();
+        self.flutter.reset();
+        let sr = self.sr;
+        for (k, n) in self.drift.iter_mut().enumerate() {
+            *n = SmoothNoise::new(tape_seed(k as u64), DRIFT_HZ, sr);
+        }
+        self.drift_base = SmoothNoise::new(tape_seed(u64::MAX), DRIFT_HZ, sr);
+        self.mix.snap();
+    }
+    fn process(&mut self, channels: &mut [&mut [f32]]) {
+        let n = block_len(channels);
+        let nch = channels.len().min(self.lines.len());
+        if nch == 0 {
+            return;
+        }
+        let per_ms = self.sr * 0.001;
+        let base = TAPE_BASE_MS * per_ms;
+        // Modulation amplitudes in milliseconds; the depth knobs scale the swings.
+        let wow_amp = WOW_SWING_MS * self.pv.v("wow_depth") / 100.0;
+        let flutter_amp = FLUTTER_SWING_MS * self.pv.v("flutter_depth") / 100.0;
+        let drift_amp = DRIFT_SWING_MS * self.pv.v("randomness") / 100.0;
+        let wow_rate = self.pv.v("wow_rate");
+        let flutter_rate = self.pv.v("flutter_rate");
+        let width = self.pv.v("stereo_width") / 100.0;
+        // Up to a quarter cycle (90°) of stereo phase offset.
+        let phase_off = width as f64 * 0.25;
+        let (use_wow, use_flutter) = (wow_amp > 0.0, flutter_amp > 0.0);
+        for i in 0..n {
+            let mix = self.mix.tick();
+            let base_wave = self.drift_base.tick();
+            for ch in 0..nch {
+                let x = channels[ch][i];
+                let off = if ch == 0 { 0.0 } else { phase_off };
+                let mut mod_ms = 0.0;
+                if use_wow {
+                    mod_ms += wow_amp * bipolar(self.wow.phase(off));
+                }
+                if use_flutter {
+                    mod_ms += flutter_amp * bipolar(self.flutter.phase(off));
+                }
+                let drift = base_wave + width * (self.drift[ch].tick() - base_wave);
+                mod_ms += drift_amp * drift;
+                let d = base + mod_ms * per_ms;
+                let line = &mut self.lines[ch];
+                let wet = line.read(d);
+                line.push(x);
+                channels[ch][i] = x + mix * (wet - x);
+            }
+            self.wow.advance(wow_rate, self.sr);
+            self.flutter.advance(flutter_rate, self.sr);
         }
     }
 }

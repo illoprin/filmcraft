@@ -24,7 +24,7 @@ pub(crate) use eq::{ParametricEq, SimpleEq};
 pub use essential::DeEsser;
 pub(crate) use essential::{DeReverb, SpeechEnhance, StereoWidth};
 pub(crate) use filters::{FftFilter, FullParametricEq, GraphicEq, NotchFilter, ScientificFilter};
-pub(crate) use modulation::{AnalogDelay, ChorusFlanger, Flanger, MultitapDelay, Phaser};
+pub(crate) use modulation::{AnalogDelay, ChorusFlanger, Flanger, MultitapDelay, Phaser, TapeWiggle};
 pub(crate) use multiband::{DynamicsRack, MultibandCompressor, TubeCompressor};
 pub use pitch::PitchShifter;
 pub(crate) use restoration::{DeHum, DeNoise};
@@ -132,6 +132,7 @@ static REGISTRY: &[EffectInfo] = &[
     entry!("chorus_flanger", "Chorus/Flanger", Modulation, ChorusFlanger),
     entry!("flanger", "Flanger", Modulation, Flanger),
     entry!("phaser", "Phaser", Modulation, Phaser),
+    entry!("tape_wiggle", "Tape Wiggle", Modulation, TapeWiggle),
     entry!("analog_delay", "Analog Delay", Time, AnalogDelay),
     entry!("multitap_delay", "Multitap Delay", Time, MultitapDelay),
     entry!("convolution_reverb", "Convolution Reverb", Reverb, ConvolutionReverb),

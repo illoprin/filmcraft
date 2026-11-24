@@ -47,7 +47,8 @@ fn neutral(id: &str) -> Option<Vec<(&'static str, f32)>> {
         "dynamics_rack" => vec![("comp_on", 0.0)],
         "multiband_compressor" => return None, // all-pass, not identity: see its own test
         "tube_compressor" => return None,      // saturation stage: near-identity at low level, tested separately
-        "chorus_flanger" | "flanger" | "phaser" | "multitap_delay" | "distortion" | "bitcrusher" | "guitar_suite" | "binauralizer" | "convolution_reverb" => {
+        "chorus_flanger" | "flanger" | "phaser" | "multitap_delay" | "distortion" | "bitcrusher" | "tape_wiggle" | "guitar_suite" | "binauralizer"
+        | "convolution_reverb" => {
             vec![("mix", 0.0)]
         }
         "analog_delay" => vec![("wet", 0.0), ("dry", 100.0)],
@@ -81,6 +82,7 @@ const NEW_IDS: &[&str] = &[
     "channel_mixer",
     "distortion",
     "bitcrusher",
+    "tape_wiggle",
     "guitar_suite",
     "mastering",
     "vocal_enhancer",
@@ -566,6 +568,43 @@ fn bitcrusher_jitter_varies_the_hold_timing() {
     let shaken = out(80.0);
     let diff = steady.iter().zip(&shaken).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
     assert!(diff > 0.01, "jitter should move the hold clock, max diff {diff}");
+}
+
+#[test]
+fn tape_wiggle_wow_and_flutter_bend_pitch() {
+    // Wow and flutter move the read distance, which bends the pitch: a steady tone smears away
+    // from its bin when either LFO is on, and passes clean when both are off.
+    let flat = tone_db(fx("tape_wiggle", &[("wow_depth", 0.0), ("flutter_depth", 0.0), ("randomness", 0.0)]).as_mut(), 1000.0, 0.5);
+    let wow = tone_db(fx("tape_wiggle", &[("wow_depth", 100.0), ("wow_rate", 1.0), ("flutter_depth", 0.0), ("randomness", 0.0)]).as_mut(), 1000.0, 0.5);
+    let flutter =
+        tone_db(fx("tape_wiggle", &[("wow_depth", 0.0), ("flutter_depth", 100.0), ("flutter_rate", 10.0), ("randomness", 0.0)]).as_mut(), 1000.0, 0.5);
+    assert!(flat > -0.5, "no modulation should pass the tone, got {flat}");
+    assert!(wow < flat - 3.0, "wow {wow} dB should smear the tone from {flat} dB");
+    assert!(flutter < flat - 3.0, "flutter {flutter} dB should smear the tone from {flat} dB");
+}
+
+#[test]
+fn tape_wiggle_stereo_width_decorrelates_the_channels() {
+    let n = SR as usize;
+    let x = sine(700.0, 0.5, SR as f64, n, 0.0);
+    let max_diff = |width: f32| {
+        let mut e = fx(
+            "tape_wiggle",
+            &[("wow_depth", 100.0), ("wow_rate", 0.8), ("flutter_depth", 50.0), ("randomness", 60.0), ("stereo_width", width), ("mix", 100.0)],
+        );
+        let (l, r) = run(e.as_mut(), &x, &x);
+        l.iter().zip(&r).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max)
+    };
+    assert!(max_diff(0.0) < 1e-6, "width 0 must stay mono: {}", max_diff(0.0));
+    assert!(max_diff(100.0) > 0.01, "width 100 should spread the channels: {}", max_diff(100.0));
+}
+
+#[test]
+fn tape_wiggle_randomness_adds_drift() {
+    // With both LFOs off, only the random drift moves the delay; it still colours a steady tone.
+    let flat = tone_db(fx("tape_wiggle", &[("wow_depth", 0.0), ("flutter_depth", 0.0), ("randomness", 0.0)]).as_mut(), 1000.0, 0.5);
+    let drift = tone_db(fx("tape_wiggle", &[("wow_depth", 0.0), ("flutter_depth", 0.0), ("randomness", 100.0)]).as_mut(), 1000.0, 0.5);
+    assert!(drift < flat - 1.0, "randomness {drift} dB should wander from {flat} dB");
 }
 
 #[test]

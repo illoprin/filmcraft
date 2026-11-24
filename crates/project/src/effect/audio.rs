@@ -235,6 +235,19 @@ fn bitcrusher() -> Vec<ParamDef> {
     v
 }
 
+/// Tape wow and flutter: the slow sway and fast shiver of a worn cassette transport, with random
+/// drift and a stereo phase spread. Controls are grouped as the two LFOs plus character/output.
+fn tape_wiggle() -> Vec<ParamDef> {
+    let mut v = Vec::new();
+    v.extend(group("Wow", vec![num("wow_rate", "Wow Rate", 0.6, 0.1, 3.0, "Hz", 2), pct("wow_depth", "Wow Depth", 30.0, 0.0, 100.0)]));
+    v.extend(group("Flutter", vec![num("flutter_rate", "Flutter Rate", 8.0, 4.0, 15.0, "Hz", 2), pct("flutter_depth", "Flutter Depth", 15.0, 0.0, 100.0)]));
+    v.extend(group(
+        "Character & Output",
+        vec![pct("randomness", "Randomness", 20.0, 0.0, 100.0), pct("stereo_width", "Stereo Width", 50.0, 0.0, 100.0), pct("mix", "Mix", 100.0, 0.0, 100.0)],
+    ));
+    v
+}
+
 /// All audio effect definitions, in Effects-panel order.
 pub(super) fn defs() -> Vec<EffectDef> {
     vec![
@@ -443,6 +456,7 @@ pub(super) fn defs() -> Vec<EffectDef> {
                 db("output", "Output Gain", 0.0, -24.0, 24.0),
             ],
         ),
+        audio("tape_wiggle", "Tape Wiggle", A_MOD, tape_wiggle()),
         // ---- Noise Reduction/Restoration ----
         audio(
             "declicker",
@@ -727,6 +741,25 @@ mod tests {
         }
         for id in ["post_filter", "post_resonance", "mix", "output"] {
             assert_eq!(group(id), Some("Tone & Output"), "{id}");
+        }
+    }
+
+    #[test]
+    fn tape_wiggle_has_its_control_groups_in_chain_order() {
+        let d = find_effect("tape_wiggle").unwrap();
+        assert_eq!(d.kind, EffectKind::Audio);
+        assert_eq!(d.category, &["Audio Effects", "Modulation"]);
+        let ids: Vec<&str> = d.params.iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["wow_rate", "wow_depth", "flutter_rate", "flutter_depth", "randomness", "stereo_width", "mix"]);
+        let group = |id: &str| d.param(id).unwrap().group;
+        for id in ["wow_rate", "wow_depth"] {
+            assert_eq!(group(id), Some("Wow"), "{id}");
+        }
+        for id in ["flutter_rate", "flutter_depth"] {
+            assert_eq!(group(id), Some("Flutter"), "{id}");
+        }
+        for id in ["randomness", "stereo_width", "mix"] {
+            assert_eq!(group(id), Some("Character & Output"), "{id}");
         }
     }
 }

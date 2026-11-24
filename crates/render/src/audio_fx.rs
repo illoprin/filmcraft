@@ -221,6 +221,7 @@ pub const DIRECT: &[(&str, &str, f64)] = &[
     ("binauralizer", "binauralizer", 0.01),
     ("distortion", "distortion", 0.05),
     ("bitcrusher", "bitcrusher", 0.0),
+    ("tape_wiggle", "tape_wiggle", 0.05),
     ("fill_left", "fill_left", 0.0),
     ("fill_right", "fill_right", 0.0),
     ("swap_channels", "swap_channels", 0.0),
