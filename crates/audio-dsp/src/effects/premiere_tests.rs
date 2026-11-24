@@ -47,7 +47,7 @@ fn neutral(id: &str) -> Option<Vec<(&'static str, f32)>> {
         "dynamics_rack" => vec![("comp_on", 0.0)],
         "multiband_compressor" => return None, // all-pass, not identity: see its own test
         "tube_compressor" => return None,      // saturation stage: near-identity at low level, tested separately
-        "chorus_flanger" | "flanger" | "phaser" | "multitap_delay" | "distortion" | "guitar_suite" | "binauralizer" | "convolution_reverb" => {
+        "chorus_flanger" | "flanger" | "phaser" | "multitap_delay" | "distortion" | "bitcrusher" | "guitar_suite" | "binauralizer" | "convolution_reverb" => {
             vec![("mix", 0.0)]
         }
         "analog_delay" => vec![("wet", 0.0), ("dry", 100.0)],
@@ -80,6 +80,7 @@ const NEW_IDS: &[&str] = &[
     "click_remover",
     "channel_mixer",
     "distortion",
+    "bitcrusher",
     "guitar_suite",
     "mastering",
     "vocal_enhancer",
@@ -456,6 +457,115 @@ fn distortion_harmonics() {
     let mut gs2 = fx("guitar_suite", &[]);
     let (y, _) = run(gs2.as_mut(), &x, &x);
     assert!(y.iter().all(|v| v.is_finite()) && rms(&y) > 0.01);
+}
+
+#[test]
+fn bitcrusher_downsamples_with_aliasing() {
+    // A 5 kHz tone through a heavy downsample aliases to |5 kHz − 6 kHz| = 1 kHz; at Downsample 1
+    // there is no such image. Uses a quiet tone and 16 bits so the soft clip and quantisation do
+    // not colour the measurement.
+    let n = SR as usize;
+    let tone = sine(5000.0, 0.3, SR as f64, n, 0.0);
+    let image = |down: f32| {
+        let mut e =
+            fx("bitcrusher", &[("drive", 0.0), ("bit_depth", 16.0), ("downsample", down), ("dither", 0.0), ("jitter", 0.0), ("mix", 100.0), ("output", 0.0)]);
+        let (y, _) = run(e.as_mut(), &tone, &tone);
+        tone_amplitude(&y[n / 2..], 1000.0, SR as f64)
+    };
+    let with_alias = image(8.0);
+    let without = image(1.0);
+    assert!(with_alias > 0.05, "Downsample 8 should alias 5 kHz to 1 kHz, got {with_alias}");
+    assert!(without < 0.01, "Downsample 1 should not alias, got {without}");
+}
+
+#[test]
+fn bitcrusher_bit_depth_sets_the_quantisation_error() {
+    // A quiet, low tone through a near-linear Drive (−24 dB): fewer bits → coarser steps → more
+    // error against the (gain-scaled) input.
+    let n = SR as usize;
+    let x = sine(50.0, 0.4, SR as f64, n, 0.0);
+    let err = |bits: f32| {
+        let mut e = fx(
+            "bitcrusher",
+            &[
+                ("drive", -24.0),
+                ("bit_depth", bits),
+                ("downsample", 1.0),
+                ("dither", 0.0),
+                ("jitter", 0.0),
+                ("mix", 100.0),
+                ("output", 0.0),
+                ("post_filter", 20000.0),
+            ],
+        );
+        let (y, _) = run(e.as_mut(), &x, &x);
+        let g = db_to_gain(-24.0) as f64;
+        let s: f64 = (n / 2..n).map(|i| (y[i] as f64 - g * x[i] as f64).powi(2)).sum();
+        (s / (n / 2) as f64).sqrt()
+    };
+    let coarse = err(3.0);
+    let fine = err(12.0);
+    assert!(coarse > 8.0 * fine, "3-bit error {coarse:e} should dwarf 12-bit {fine:e}");
+    assert!(fine < 1e-2, "12 bits should be nearly transparent, got {fine:e}");
+}
+
+#[test]
+fn bitcrusher_dither_lifts_the_quietest_levels() {
+    // A DC a third of one LSB rounds to silence without dither; dither makes it cross the levels and
+    // produce a non-zero, noise-like output.
+    let n = 12000;
+    let step = 2.0 / 2f32.powf(4.0); // 4-bit step = 0.125
+    let x = vec![0.3 * step; n];
+    let level = |dither: f32| {
+        let mut e =
+            fx("bitcrusher", &[("drive", 0.0), ("bit_depth", 4.0), ("downsample", 1.0), ("dither", dither), ("jitter", 0.0), ("mix", 100.0), ("output", 0.0)]);
+        let (y, _) = run(e.as_mut(), &x, &x);
+        rms(&y[n / 2..]) as f32
+    };
+    assert!(level(0.0) < 1e-6, "without dither the sub-LSB DC rounds away: {}", level(0.0));
+    assert!(level(1.0) > 0.01, "dither should toggle the levels: {}", level(1.0));
+}
+
+#[test]
+fn bitcrusher_drive_saturates_and_resonance_peaks() {
+    // Drive clips: plenty of third harmonic at +24 dB, almost none at −24 dB.
+    let n = SR as usize;
+    let x = sine(200.0, 0.5, SR as f64, n, 0.0);
+    let third = |drive: f32| {
+        let mut e =
+            fx("bitcrusher", &[("drive", drive), ("bit_depth", 16.0), ("downsample", 1.0), ("dither", 0.0), ("jitter", 0.0), ("mix", 100.0), ("output", 0.0)]);
+        let (y, _) = run(e.as_mut(), &x, &x);
+        let h = |k: f64| tone_amplitude(&y[n / 2..], 200.0 * k, SR as f64);
+        h(3.0) / h(1.0)
+    };
+    let hot = third(24.0);
+    let cold = third(-24.0);
+    assert!(hot > 0.1, "hard Drive should generate 3rd harmonic, got {hot}");
+    assert!(cold < 0.01, "low Drive should stay clean, got {cold}");
+    // Post Resonance: a resonant low-pass peaks at its cutoff.
+    let at_cut = |res: f32| {
+        let mut e =
+            fx("bitcrusher", &[("drive", -24.0), ("bit_depth", 16.0), ("post_filter", 3000.0), ("post_resonance", res), ("mix", 100.0), ("output", 0.0)]);
+        tone_db(e.as_mut(), 3000.0, 0.05)
+    };
+    let flat = at_cut(0.0);
+    let peak = at_cut(100.0);
+    assert!(peak > flat + 6.0, "resonance should lift the cutoff: {peak} vs {flat}");
+}
+
+#[test]
+fn bitcrusher_jitter_varies_the_hold_timing() {
+    // Randomised hold intervals move which input samples are latched.
+    let n = 4800;
+    let x = noise(16, n, 0.5);
+    let out = |jitter: f32| {
+        let mut e = fx("bitcrusher", &[("downsample", 6.0), ("jitter", jitter), ("bit_depth", 8.0), ("mix", 100.0), ("output", 0.0)]);
+        run(e.as_mut(), &x, &x).0
+    };
+    let steady = out(0.0);
+    let shaken = out(80.0);
+    let diff = steady.iter().zip(&shaken).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(diff > 0.01, "jitter should move the hold clock, max diff {diff}");
 }
 
 #[test]

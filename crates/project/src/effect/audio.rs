@@ -209,6 +209,32 @@ fn fft_filter() -> Vec<ParamDef> {
     v
 }
 
+/// Professional Bitcrusher: vintage-sampler degradation with an optional aggressive digital
+/// overdrive. Parameter groups mirror the signal chain.
+fn bitcrusher() -> Vec<ParamDef> {
+    let mut v = Vec::new();
+    v.extend(group("Input & Saturation", vec![db("drive", "Drive", 0.0, -24.0, 24.0), hz("pre_filter", "Pre-Filter", 20000.0, 20.0, 20000.0)]));
+    v.extend(group(
+        "Crushing Engine",
+        vec![
+            num("bit_depth", "Bit Depth", 8.0, 1.0, 16.0, "bits", 1),
+            num("downsample", "Downsample", 1.0, 1.0, 64.0, "×", 2),
+            pct("jitter", "Jitter", 0.0, 0.0, 100.0),
+            b("dither", "Dither", false),
+        ],
+    ));
+    v.extend(group(
+        "Tone & Output",
+        vec![
+            hz("post_filter", "Post-Filter", 20000.0, 20.0, 20000.0),
+            pct("post_resonance", "Post Resonance", 0.0, 0.0, 100.0),
+            pct("mix", "Mix", 100.0, 0.0, 100.0),
+            db("output", "Output Gain", 0.0, -24.0, 24.0),
+        ],
+    ));
+    v
+}
+
 /// All audio effect definitions, in Effects-panel order.
 pub(super) fn defs() -> Vec<EffectDef> {
     vec![
@@ -500,6 +526,7 @@ pub(super) fn defs() -> Vec<EffectDef> {
                 pct("mix", "Mix", 100.0, 0.0, 100.0),
             ],
         ),
+        audio("bitcrusher", "Bitcrusher", A_SPECIAL, bitcrusher()),
         audio(
             "distortion",
             "Distortion",
@@ -681,6 +708,25 @@ mod tests {
         let d = find_effect("parametric_eq").unwrap();
         for id in ["low_freq", "low_gain", "mid_freq", "mid_gain", "mid_q", "high_freq", "high_gain"] {
             assert!(d.param(id).is_some(), "{id}");
+        }
+    }
+
+    #[test]
+    fn bitcrusher_has_its_three_control_groups_in_chain_order() {
+        let d = find_effect("bitcrusher").unwrap();
+        assert_eq!(d.kind, EffectKind::Audio);
+        assert_eq!(d.category, &["Audio Effects", "Special"]);
+        let ids: Vec<&str> = d.params.iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["drive", "pre_filter", "bit_depth", "downsample", "jitter", "dither", "post_filter", "post_resonance", "mix", "output"]);
+        let group = |id: &str| d.param(id).unwrap().group;
+        for id in ["drive", "pre_filter"] {
+            assert_eq!(group(id), Some("Input & Saturation"), "{id}");
+        }
+        for id in ["bit_depth", "downsample", "jitter", "dither"] {
+            assert_eq!(group(id), Some("Crushing Engine"), "{id}");
+        }
+        for id in ["post_filter", "post_resonance", "mix", "output"] {
+            assert_eq!(group(id), Some("Tone & Output"), "{id}");
         }
     }
 }

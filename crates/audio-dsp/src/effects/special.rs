@@ -3,7 +3,7 @@
 
 use super::multiband::soft_clip;
 use super::time::Reverb;
-use super::util::{DcBlock, DelayLine, OnePole, coef, lin_db};
+use super::util::{DcBlock, DelayLine, OnePole, Prng, coef, lin_db};
 use crate::biquad::{Biquad, Coeffs, FilterType};
 use crate::loudness::LoudnessMeter;
 use crate::{AudioEffect, ParamSpec, ParamValues, Smoothed, Unit, block_len, db_to_gain, flush32, param_plumbing};
@@ -189,6 +189,161 @@ impl AudioEffect for Distortion {
                 }
                 channels[ch][i] = x + m * (y * o - x);
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------- bitcrusher
+
+/// A deterministic seed for the `k`-th noise source, identical on construction and after
+/// [`Bitcrusher::reset`] so a reset reproduces the first pass exactly.
+fn crush_seed(k: u64) -> u64 {
+    0x00C0_FFEE_u64 ^ k.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+/// Vintage sampler / digital-overdrive bitcrusher. The signal chain is:
+/// Pre-Filter (low-pass) → Drive → `tanh` soft clip → Dither → Bit Depth quantisation and
+/// Downsample (sample & hold, with timing Jitter) → Post-Filter (resonant low-pass) → Mix and
+/// Output Gain. Drive and the soft clip fill the bit grid densely so the quantisation crunch is
+/// audible; Dither (TPDF, ±1 LSB) removes the correlated quantisation distortion on quiet
+/// passages; Jitter randomises the hold clock so the aliasing whistles sound less sterile.
+pub struct Bitcrusher {
+    pv: ParamValues,
+    sr: f32,
+    pre: Vec<Biquad>,
+    pre_coeffs: Coeffs,
+    post: Vec<Biquad>,
+    post_coeffs: Coeffs,
+    /// Per-channel latched sample of the sample & hold. One shared clock keeps the stereo image
+    /// coherent: both channels latch together.
+    held: Vec<f32>,
+    /// Samples left until the next latch; fractional, so Downsample need not be an integer.
+    hold_remaining: f32,
+    /// Per-channel TPDF dither noise (reseeded by [`Bitcrusher::reset`]).
+    dither: Vec<Prng>,
+    /// Timing-jitter noise (reseeded by [`Bitcrusher::reset`]).
+    jitter: Prng,
+    drive: Smoothed,
+    mix: Smoothed,
+    out: Smoothed,
+}
+
+impl Bitcrusher {
+    pub const PARAMS: &'static [ParamSpec] = &[
+        // Input & Saturation
+        ParamSpec::new("drive", "Drive", -24.0, 24.0, 0.0, Unit::Decibels),
+        ParamSpec::log("pre_filter", "Pre-Filter", 20.0, 20000.0, 20000.0, Unit::Hertz),
+        // Crushing Engine
+        ParamSpec::new("bit_depth", "Bit Depth", 1.0, 16.0, 8.0, Unit::None),
+        ParamSpec::new("downsample", "Downsample", 1.0, 64.0, 1.0, Unit::None),
+        ParamSpec::new("jitter", "Jitter", 0.0, 100.0, 0.0, Unit::Percent),
+        ParamSpec::toggle("dither", "Dither", false),
+        // Tone & Output
+        ParamSpec::log("post_filter", "Post-Filter", 20.0, 20000.0, 20000.0, Unit::Hertz),
+        ParamSpec::new("post_resonance", "Post Resonance", 0.0, 100.0, 0.0, Unit::Percent),
+        ParamSpec::new("mix", "Mix", 0.0, 100.0, 100.0, Unit::Percent),
+        ParamSpec::new("output", "Output Gain", -24.0, 24.0, 0.0, Unit::Decibels),
+    ];
+
+    pub fn new(sample_rate: f32, channels: usize) -> Self {
+        let ch = channels.max(1);
+        let mut s = Bitcrusher {
+            pv: ParamValues::new(Self::PARAMS),
+            sr: sample_rate,
+            pre: vec![Biquad::new(); ch],
+            pre_coeffs: Coeffs::IDENTITY,
+            post: vec![Biquad::new(); ch],
+            post_coeffs: Coeffs::IDENTITY,
+            held: vec![0.0; ch],
+            hold_remaining: 0.0,
+            dither: (0..(ch as u64)).map(crush_seed).map(Prng::new).collect(),
+            jitter: Prng::new(crush_seed(0x1F13_5EED)),
+            drive: sm(1.0, sample_rate),
+            mix: sm(1.0, sample_rate),
+            out: sm(1.0, sample_rate),
+        };
+        s.apply_params(true);
+        s
+    }
+
+    fn apply_params(&mut self, snap: bool) {
+        let sr = self.sr as f64;
+        let q_butterworth = std::f64::consts::FRAC_1_SQRT_2;
+        self.pre_coeffs = Coeffs::design(FilterType::LowPass, sr, self.pv.v("pre_filter") as f64, q_butterworth, 0.0);
+        // Resonance 0…100 % → Q 0.71 (flat) … 12 (a strong peak at the cutoff).
+        let resonance = (self.pv.v("post_resonance") / 100.0).clamp(0.0, 1.0) as f64;
+        let q = q_butterworth + resonance * (12.0 - q_butterworth);
+        self.post_coeffs = Coeffs::design(FilterType::LowPass, sr, self.pv.v("post_filter") as f64, q, 0.0);
+        self.drive.set(db_to_gain(self.pv.v("drive")));
+        self.mix.set(self.pv.v("mix") / 100.0);
+        self.out.set(db_to_gain(self.pv.v("output")));
+        if snap {
+            self.drive.snap();
+            self.mix.snap();
+            self.out.snap();
+        }
+    }
+}
+
+impl AudioEffect for Bitcrusher {
+    param_plumbing!("bitcrusher");
+    fn reset(&mut self) {
+        self.pre.iter_mut().for_each(Biquad::reset);
+        self.post.iter_mut().for_each(Biquad::reset);
+        self.held.iter_mut().for_each(|v| *v = 0.0);
+        self.hold_remaining = 0.0;
+        for (k, p) in self.dither.iter_mut().enumerate() {
+            *p = Prng::new(crush_seed(k as u64));
+        }
+        self.jitter = Prng::new(crush_seed(0x1F13_5EED));
+        self.drive.snap();
+        self.mix.snap();
+        self.out.snap();
+    }
+    fn process(&mut self, channels: &mut [&mut [f32]]) {
+        let n = block_len(channels);
+        let nch = channels.len().min(self.pre.len());
+        if nch == 0 {
+            return;
+        }
+        let pre_coeffs = self.pre_coeffs;
+        let post_coeffs = self.post_coeffs;
+        let bits = self.pv.v("bit_depth").clamp(1.0, 16.0);
+        let levels = 2f32.powf(bits);
+        let step = 2.0 / levels;
+        let downsample = self.pv.v("downsample").max(1.0);
+        let jitter_amt = (self.pv.v("jitter") / 100.0).clamp(0.0, 1.0) * 0.5;
+        let dither_on = self.pv.on("dither");
+        for i in 0..n {
+            let (drive, mix, out) = (self.drive.tick(), self.mix.tick(), self.out.tick());
+            // One latch decision per input sample, shared by every channel.
+            let latch = self.hold_remaining <= 0.0;
+            for ch in 0..nch {
+                let x = channels[ch][i];
+                // 1. Pre-Filter: tames the highs (and the aliasing) before the degradation.
+                let p = self.pre[ch].tick(&pre_coeffs, x as f64) as f32;
+                // 2. Drive → tanh soft clip: fills the bit grid and rounds the peaks.
+                let mut v = (drive * p).tanh();
+                // 3. Dither: TPDF noise of ±1 LSB, added before the quantiser.
+                if dither_on {
+                    let (r1, r2) = (self.dither[ch].uniform(), self.dither[ch].uniform());
+                    v += (r1 + r2) * (step * 0.5);
+                }
+                // 4. Bit Depth quantisation, then Downsample by holding the value (sample & hold).
+                let quant = ((v / step).round() * step).clamp(-1.0, 1.0);
+                if latch {
+                    self.held[ch] = quant;
+                }
+                // 5. Post-Filter: output low-pass, resonant with Post Resonance.
+                let w = self.post[ch].tick(&post_coeffs, self.held[ch] as f64) as f32;
+                // 6. Mix (dry/wet) then Output Gain.
+                channels[ch][i] = (x * (1.0 - mix) + w * mix) * out;
+            }
+            if latch {
+                let j = if jitter_amt > 0.0 { self.jitter.uniform() * jitter_amt } else { 0.0 };
+                self.hold_remaining = (downsample * (1.0 + j)).max(1.0);
+            }
+            self.hold_remaining -= 1.0;
         }
     }
 }

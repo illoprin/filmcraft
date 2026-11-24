@@ -30,7 +30,7 @@ pub use pitch::PitchShifter;
 pub(crate) use restoration::{DeHum, DeNoise};
 pub(crate) use reverbs::{ConvolutionReverb, SurroundReverb};
 pub use special::LoudnessMeterFx;
-pub(crate) use special::{AmbisonicsPanner, Binauralizer, ChannelMixer, Distortion, GuitarSuite, Mastering, Mute, StereoExpander, VocalEnhancer};
+pub(crate) use special::{AmbisonicsPanner, Binauralizer, Bitcrusher, ChannelMixer, Distortion, GuitarSuite, Mastering, Mute, StereoExpander, VocalEnhancer};
 pub(crate) use time::{Delay, Reverb};
 
 use crate::{AudioEffect, ParamSpec};
@@ -139,6 +139,7 @@ static REGISTRY: &[EffectInfo] = &[
     entry!("click_remover", "Automatic Click Remover", Restoration, ClickRemover),
     entry!("channel_mixer", "Channel Mixer", Channel, ChannelMixer),
     entry!("distortion", "Distortion", Special, Distortion),
+    entry!("bitcrusher", "Bitcrusher", Special, Bitcrusher),
     entry!("guitar_suite", "GuitarSuite", Special, GuitarSuite),
     entry!("mastering", "Mastering", Special, Mastering),
     entry!("vocal_enhancer", "Vocal Enhancer", Special, VocalEnhancer),
