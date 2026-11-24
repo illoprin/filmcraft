@@ -181,6 +181,39 @@ fn dragging_an_out_edge_inward_trims_the_clip() {
     assert_eq!(d.undo_steps(), undo0 + 1, "one undo step");
 }
 
+/// Dragging an edge with several clips selected trims every selected clip's edge by the same
+/// delta, as one undo step.
+#[test]
+fn dragging_an_edge_trims_every_selected_clip() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let overlay = {
+        let q = d.app().session.active_sequence().expect("sequence");
+        q.video_tracks[1].items.first().expect("the demo has a V2 overlay").id.0
+    };
+    // select the grabbed clip and another clip (not linked to it)
+    {
+        let st = &mut d.harness.state_mut().session.state;
+        st.linked_selection = false;
+        st.selection = vec![ClipId(city), ClipId(overlay)];
+        st.edit_points.clear();
+    }
+    d.frames(2);
+    let (x0, x1, y) = d.edges(city);
+    let (city0, overlay0) = (d.span(city), d.span(overlay));
+    let frame = d.frame();
+    let by = ((x1 - x0) / 5.0).round().max(12.0);
+    let undo0 = d.undo_steps();
+    d.drag(pos2(x0 + 2.0, y), pos2(x0 + 2.0 + by, y), by as usize);
+    let (city1, overlay1) = (d.span(city), d.span(overlay));
+    assert!(city1.0 > city0.0, "the grabbed clip's In edge moved: {city0:?} -> {city1:?}");
+    assert_eq!(city1.1, city0.1, "the grabbed clip's Out edge stayed: trimmed, not moved");
+    assert_eq!(overlay1.0 - overlay0.0, city1.0 - city0.0, "the other selected clip's In edge moved by the same delta");
+    assert_eq!(overlay1.1, overlay0.1, "the other selected clip's Out edge stayed");
+    assert!(city1.0 - city0.0 > frame, "the trim is more than a frame, not a wobble");
+    assert_eq!(d.undo_steps(), undo0 + 1, "the whole multi-clip trim is one undo step");
+}
+
 /// Duplicate frame markers stay inside a clip while its Out edge is dragged in, and follow the
 /// trim once it is released.
 #[test]

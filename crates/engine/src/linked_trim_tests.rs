@@ -44,6 +44,34 @@ fn unlinked_trim_leaves_the_partner_alone() {
     }
 }
 
+/// A multi-clip trim (`clips`, what a Timeline edge drag sends when several clips are selected)
+/// trims every listed clip's edge by one clamped delta, as a single undo step.
+#[test]
+fn multi_clip_trim_edits_every_listed_clip() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Multi trim", "video": 2, "audio": 0})).unwrap();
+    let item = s.project.items.values().find(|i| i.has_video() && i.as_media().is_some()).unwrap().id;
+    let frames48 = s.sequence_rate().tick_of(48).0;
+    s.execute("timeline.place", json!({"item": item.0, "track": "V1", "frame": 0, "duration": frames48, "audio": false})).unwrap();
+    s.execute("timeline.place", json!({"item": item.0, "track": "V2", "frame": 0, "duration": frames48, "audio": false})).unwrap();
+    let (v1, v2) = {
+        let q = s.active_sequence().unwrap();
+        (q.video_tracks[0].items[0].id, q.video_tracks[1].items[0].id)
+    };
+    let before = (state(&s, v1), state(&s, v2));
+    // both clips' Out edges move by the same delta
+    s.execute("timeline.trim", json!({"clip": v1.0, "clips": [v1.0, v2.0], "edge": "out", "mode": "regular", "deltaFrames": -6})).unwrap();
+    let six = s.sequence_rate().tick_of(6);
+    assert_eq!(state(&s, v1).1, before.0.1 - six, "V1 is trimmed");
+    assert_eq!(state(&s, v2).1, before.1.1 - six, "V2 is trimmed by the same delta");
+    assert_eq!(state(&s, v1).0, before.0.0, "the In edge stayed: trimmed, not moved");
+    // one undo step puts both back
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(state(&s, v1), before.0, "undo restores V1");
+    assert_eq!(state(&s, v2), before.1, "undo restores V2");
+}
+
 #[test]
 fn unlinked_rate_stretch_leaves_the_partner_alone() {
     let (mut s, video, sound) = linked_pair();

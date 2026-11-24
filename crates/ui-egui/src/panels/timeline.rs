@@ -184,6 +184,10 @@ pub enum Drag {
     },
     Trim {
         clip: ClipId,
+        /// Every clip the drag trims, fixed when it begins: the grabbed clip alone, or the whole
+        /// selection (with linked partners when linked selection is on) when several clips are
+        /// selected, so a multi-clip drag trims them all by the same delta.
+        clips: Vec<ClipId>,
         edge: filmcraft_edit::Edge,
         mode: filmcraft_edit::TrimMode,
         delta: Tick,
@@ -961,7 +965,15 @@ mod trim_preview_tests {
         let music = seq.audio_tracks.iter().flat_map(|t| &t.items).find(|i| i.name.contains("Ambient")).unwrap().clone();
         for (edge, delta) in [(filmcraft_edit::Edge::In, 5), (filmcraft_edit::Edge::Out, -5), (filmcraft_edit::Edge::In, -1)] {
             let delta = Tick(delta * filmcraft_time::TICKS_PER_SECOND);
-            app.tl.drag = Some(Drag::Trim { clip: music.id, edge, mode: filmcraft_edit::TrimMode::Regular, delta, from: Tick::ZERO, linked: true });
+            app.tl.drag = Some(Drag::Trim {
+                clip: music.id,
+                clips: vec![music.id],
+                edge,
+                mode: filmcraft_edit::TrimMode::Regular,
+                delta,
+                from: Tick::ZERO,
+                linked: true,
+            });
             let (mut out, mut edited) = (HashMap::new(), HashMap::new());
             preview_drag(&app, &seq, &mut out, &mut edited);
             let shown = edited.get(&music.id).expect("the trimmed clip is drawn from its edited item");

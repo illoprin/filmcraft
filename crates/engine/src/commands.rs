@@ -938,13 +938,19 @@ pub fn trim_delta(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: 
 /// [`trim_delta`] for a trim that, with `linked` false (Alt held), leaves the clip's linked
 /// partners alone (#3300).
 pub fn trim_delta_linked(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, linked: bool) -> Result<Tick> {
+    let clips = if linked { with_links(s, &[clip]) } else { vec![clip] };
+    trim_delta_for(s, &clips, edge, mode, delta)
+}
+
+/// The delta a trim of the clips `clips` can apply together (multi-clip trim), without editing
+/// anything: `delta` clamped by the most restrictive member, so every clip moves by one amount.
+pub fn trim_delta_for(s: &Session, clips: &[ClipId], edge: Edge, mode: TrimMode, delta: Tick) -> Result<Tick> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let durations = |id: ItemId| crate::media_duration(&s.project, &s.media, id);
     let starts = |id: ItemId| crate::media_start(&s.project, id);
     let mut next = s.project.next_id;
     let ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: q.settings.frame_rate.frame_duration() };
-    let clips = if linked { with_links(s, &[clip]) } else { vec![clip] };
-    clamp_trim_linked(q, &clips, edge, mode, delta, &ctx)
+    clamp_trim_linked(q, clips, edge, mode, delta, &ctx)
 }
 
 /// `clip` and, unless `p` has `"linked": false` (Alt held), its linked partners.
@@ -3443,7 +3449,15 @@ fn build() -> Vec<CommandSpec> {
                     .map(Tick)
                     .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                     .unwrap_or_default();
-                let clips = with_links_p(s, p, c);
+                // A multi-clip drag (several clips selected) passes the whole group as `clips`; a
+                // single-clip caller leaves it out and the grabbed clip's linked partners follow.
+                let clips = match p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(ClipId).collect::<Vec<_>>()) {
+                    Some(ids) if !ids.is_empty() => {
+                        let mut seen = std::collections::HashSet::with_capacity(ids.len());
+                        ids.into_iter().filter(|id| seen.insert(*id)).collect()
+                    }
+                    _ => with_links_p(s, p, c),
+                };
                 // a ripple trim's step records the ripple id, whichever command runs it
                 let outer = s.command_origin.clone();
                 if mode == TrimMode::Ripple {
@@ -3726,10 +3740,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("timeline.isolateTrackLock", "Isolate Track Lock", [], None, r#"{"track":"V1"|id,"invert":bool=false}"#, has_seq, |s, p| {
             let tr = track_p(s, p, "track", "timeline.isolateTrackLock")?.ok_or_else(|| bad("timeline.isolateTrackLock", "need `track`"))?;
             let invert = p.get("invert").and_then(Value::as_bool).unwrap_or(false);
-            let ids: Vec<TrackId> = s
-                .active_sequence()
-                .map(|q| q.video_tracks.iter().chain(q.audio_tracks.iter()).map(|t| t.id).collect())
-                .unwrap_or_default();
+            let ids: Vec<TrackId> = s.active_sequence().map(|q| q.video_tracks.iter().chain(q.audio_tracks.iter()).map(|t| t.id).collect()).unwrap_or_default();
             if !ids.contains(&tr) {
                 return Err(EngineError::Other("timeline.isolateTrackLock: no such track".into()));
             }
@@ -3749,10 +3760,7 @@ fn build() -> Vec<CommandSpec> {
             let tr = track_p(s, p, "track", "timeline.isolateTargeting")?.ok_or_else(|| bad("timeline.isolateTargeting", "need `track`"))?;
             let invert = p.get("invert").and_then(Value::as_bool).unwrap_or(false);
             let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
-            let all: Vec<TrackId> = s
-                .active_sequence()
-                .map(|q| q.video_tracks.iter().chain(q.audio_tracks.iter()).map(|t| t.id).collect())
-                .unwrap_or_default();
+            let all: Vec<TrackId> = s.active_sequence().map(|q| q.video_tracks.iter().chain(q.audio_tracks.iter()).map(|t| t.id).collect()).unwrap_or_default();
             if !all.contains(&tr) {
                 return Err(EngineError::Other("timeline.isolateTargeting: no such track".into()));
             }
