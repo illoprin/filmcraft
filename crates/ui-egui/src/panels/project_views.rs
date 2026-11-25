@@ -267,8 +267,11 @@ pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: 
         actions.push(("project.select".into(), json!({"items": sel.iter().map(|i| i.0).collect::<Vec<_>>()})));
     }
     if resp.double_clicked() {
-        let matte = matches!(kind, ItemKind::Media(m) if matches!(m.media, filmcraft_engine::project::MediaRef::Generator(filmcraft_media::Generator::ColorMatte { .. })));
-        if matte {
+        // a text style has no source to open: a double-click renames it
+        if matches!(kind, ItemKind::TextStyle(_)) {
+            actions.push(("projectPanel.rename".into(), json!({"item": id.0})));
+        } else if matches!(kind, ItemKind::Media(m) if matches!(m.media, filmcraft_engine::project::MediaRef::Generator(filmcraft_media::Generator::ColorMatte { .. })))
+        {
             // like Premiere: double-clicking a Color Matte opens its color picker
             actions.push(("project.select".into(), json!({"items": [id.0]})));
             actions.push(("project.matteColor".into(), json!({})));
