@@ -1026,6 +1026,55 @@ fn menu_commands() -> Vec<CommandSpec> {
     ]
 }
 
+/// `graphics.copyLayers`: put named (default: selected) layers of the target graphic on the one
+/// application clipboard.
+pub(crate) fn copy_layers(s: &mut Session, p: &Value) -> Result<Value> {
+    let clip = target_clip(s, p).ok_or_else(|| bad("graphics.copyLayers", "no graphic clip"))?;
+    let mut layers = layers_p(s, clip, p)?;
+    layers.sort_unstable();
+    layers.dedup();
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let (_, it) = seq.find_item(clip).ok_or_else(|| bad("graphics.copyLayers", "no such clip"))?;
+    let idx = layer_indices(&it.effects);
+    let mut copied = Vec::with_capacity(layers.len());
+    for &l in &layers {
+        let ei = *idx.get(l).ok_or_else(|| bad("graphics.copyLayers", format!("no layer {l}")))?;
+        copied.push(it.effects[ei].clone());
+    }
+    let count = copied.len();
+    crate::commands::set_graphic_layers_clipboard(s, crate::clipboard::GraphicLayersClipboard { layers: copied });
+    Ok(json!({"clip": clip.0, "layers": layers, "count": count}))
+}
+
+/// `graphics.pasteLayers`: clone the copied layers into the target graphic above the selected
+/// layer (`above` names one; nothing selected means in front of every layer), with fresh layer uids
+/// and the copies selected, as one undo step. Also what the global Paste does while layers are on
+/// the clipboard.
+pub(crate) fn paste_layers(s: &mut Session, p: &Value) -> Result<Value> {
+    let clip = target_clip(s, p).ok_or_else(|| bad("graphics.pasteLayers", "no graphic clip"))?;
+    let Some(clipboard) = s.state.graphic_layers_clipboard.clone().filter(|c| !c.layers.is_empty()) else {
+        return Err(bad("graphics.pasteLayers", "no layers have been copied"));
+    };
+    let count = clipboard.layers.len();
+    // above the named layer, else above the frontmost selected layer, else in front of all
+    let above = p.get("above").and_then(Value::as_u64).map(|v| v as usize).or_else(|| s.state.graphic_layers.iter().copied().max());
+    let base = s.edit_sequence("Paste Graphic Layers", move |q, _, st| {
+        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        let idx = layer_indices(&it.effects);
+        let pos = above.and_then(|l| idx.get(l).copied()).map_or_else(|| idx.last().map_or(it.effects.len(), |&l| l + 1), |ei| ei + 1);
+        let base = idx.iter().filter(|&&l| l < pos).count();
+        for (k, layer) in clipboard.layers.iter().enumerate() {
+            it.effects.insert(pos + k, layer.clone());
+        }
+        // the copies keep their look but get fresh identities inside this undo step
+        ensure_layer_uids(&mut it.effects);
+        st.selection = vec![clip];
+        st.graphic_layers = (base..base + count).collect();
+        Ok(base)
+    })?;
+    Ok(json!({"clip": clip.0, "count": count, "layers": (base..base + count).collect::<Vec<_>>()}))
+}
+
 pub fn commands() -> Vec<CommandSpec> {
     let mut v = vec![
         spec(
@@ -1220,23 +1269,7 @@ pub fn commands() -> Vec<CommandSpec> {
         }),
         // Copy and paste graphic layers on the one application clipboard (see [`crate::clipboard`]):
         // copy a layer and paste it into the same graphic or another one.
-        spec("graphics.copyLayers", "Copy Layers", &[], None, r#"{"clip":id?,"layers":[n]? (default: the selected layers)}"#, has_graphic, |s, p| {
-            let clip = target_clip(s, p).ok_or_else(|| bad("graphics.copyLayers", "no graphic clip"))?;
-            let mut layers = layers_p(s, clip, p)?;
-            layers.sort_unstable();
-            layers.dedup();
-            let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
-            let (_, it) = seq.find_item(clip).ok_or_else(|| bad("graphics.copyLayers", "no such clip"))?;
-            let idx = layer_indices(&it.effects);
-            let mut copied = Vec::with_capacity(layers.len());
-            for &l in &layers {
-                let ei = *idx.get(l).ok_or_else(|| bad("graphics.copyLayers", format!("no layer {l}")))?;
-                copied.push(it.effects[ei].clone());
-            }
-            let count = copied.len();
-            crate::commands::set_graphic_layers_clipboard(s, crate::clipboard::GraphicLayersClipboard { layers: copied });
-            Ok(json!({"clip": clip.0, "layers": layers, "count": count}))
-        }),
+        spec("graphics.copyLayers", "Copy Layers", &[], None, r#"{"clip":id?,"layers":[n]? (default: the selected layers)}"#, has_graphic, copy_layers),
         spec(
             "graphics.pasteLayers",
             "Paste Layers",
@@ -1244,30 +1277,7 @@ pub fn commands() -> Vec<CommandSpec> {
             None,
             r#"{"clip":id? (default: the selected graphic),"above":n? (a layer to insert above; default: above the frontmost selected layer, else in front of every layer)}"#,
             has_graphic,
-            |s, p| {
-                let clip = target_clip(s, p).ok_or_else(|| bad("graphics.pasteLayers", "no graphic clip"))?;
-                let Some(clipboard) = s.state.graphic_layers_clipboard.clone().filter(|c| !c.layers.is_empty()) else {
-                    return Err(bad("graphics.pasteLayers", "no layers have been copied"));
-                };
-                let count = clipboard.layers.len();
-                // above the named layer, else above the frontmost selected layer, else in front of all
-                let above = p.get("above").and_then(Value::as_u64).map(|v| v as usize).or_else(|| s.state.graphic_layers.iter().copied().max());
-                let base = s.edit_sequence("Paste Graphic Layers", move |q, _, st| {
-                    let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
-                    let idx = layer_indices(&it.effects);
-                    let pos = above.and_then(|l| idx.get(l).copied()).map_or_else(|| idx.last().map_or(it.effects.len(), |&l| l + 1), |ei| ei + 1);
-                    let base = idx.iter().filter(|&&l| l < pos).count();
-                    for (k, layer) in clipboard.layers.iter().enumerate() {
-                        it.effects.insert(pos + k, layer.clone());
-                    }
-                    // the copies keep their look but get fresh identities inside this undo step
-                    ensure_layer_uids(&mut it.effects);
-                    st.selection = vec![clip];
-                    st.graphic_layers = (base..base + count).collect();
-                    Ok(base)
-                })?;
-                Ok(json!({"clip": clip.0, "count": count, "layers": (base..base + count).collect::<Vec<_>>()}))
-            },
+            paste_layers,
         ),
         spec(
             "graphics.arrangeLayer",

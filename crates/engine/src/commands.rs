@@ -4717,12 +4717,16 @@ fn paste_anchor(q: &filmcraft_project::Sequence, kind: TrackKind, src_min: usize
 /// decide where each copied track lands (see [`paste_anchor`]).
 fn paste(s: &mut Session, insert: bool) -> Result<Value> {
     // The application clipboard holds whatever was copied last, wherever it was copied from:
-    // the effects or keyframes copied in Effect Controls, captions, or timeline clips.
+    // the effects or keyframes copied in Effect Controls, the layers copied in Essential Graphics,
+    // captions, or timeline clips.
     if s.state.effect_clipboard.is_some() {
         return crate::effect_ops::paste_clipboard_effects(s);
     }
     if s.state.keyframe_clipboard.is_some() {
         return crate::effect_ops::paste_clipboard_keyframes(s);
+    }
+    if s.state.graphic_layers_clipboard.is_some() {
+        return crate::graphics::paste_layers(s, &Value::Null);
     }
     if !s.state.caption_clipboard.is_empty() {
         return crate::captions::paste(s, insert);

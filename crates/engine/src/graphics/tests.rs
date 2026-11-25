@@ -1057,4 +1057,8 @@ fn graphic_layer_copy_takes_the_one_clipboard_and_pasting_it_empty_fails() {
     s.state.effect_clipboard = Some(Default::default());
     s.execute("graphics.copyLayers", json!({"clip": clip.0, "layers": [0]})).unwrap();
     assert!(s.state.graphic_layers_clipboard.is_some() && s.state.effect_clipboard.is_none(), "the one clipboard now holds the layers");
+    // the global Paste pastes the layers too, not the (now empty) clip clipboard
+    s.execute("edit.paste", json!({})).unwrap();
+    let layers = s.execute("graphics.list", json!({"clip": clip.0})).unwrap()["layers"].as_array().unwrap().len();
+    assert_eq!(layers, 2, "Edit ▸ Paste pasted the copied layer");
 }
