@@ -45,11 +45,12 @@ fn draft_id() -> egui::Id {
 pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, track: TrackId, r: Rect, visible: Rect, label: &str, t: &Tokens) -> Option<Action> {
     let recording_here = app.session.voiceover.rec.as_ref().is_some_and(|x| x.track == track);
     let resp = ui.interact(r.intersect(visible), egui::Id::unique(("vo", track.0)), Sense::click());
+    let p = ui.painter().with_clip_rect(visible);
     if resp.hovered() {
-        ui.painter().rect_filled(r, 2.0, t.hover);
+        p.rect_filled(r, 2.0, t.hover);
     }
     let col = if recording_here { RED } else { t.text_dim };
-    icons::paint(&ui.painter().with_clip_rect(visible), r.shrink(1.0), Icon::Mic, col);
+    icons::paint(&p, r.shrink(1.0), Icon::Mic, col);
     let id = format!("timeline.track.{label}.voiceover");
     app.auto.add(&id, r, if recording_here { "Stop Voice-over Recording" } else { "Voice-over Record" });
     let mut act = None;

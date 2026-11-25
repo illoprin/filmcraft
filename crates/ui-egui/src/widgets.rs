@@ -553,6 +553,27 @@ pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id
     resp
 }
 
+/// [`icon_toggle`] shown only where `rect` meets `clip`, such as a Timeline track header scrolled
+/// partly out of its half: the icon keeps its size and is cut off at the edge, takes clicks only
+/// where it shows, and draws nothing once it is scrolled out entirely. Passing `rect.intersect(clip)`
+/// to [`icon_toggle`] instead would shrink the icon and re-centre it, so a track scrolled out would
+/// change the icon's size as it slid away.
+#[allow(clippy::too_many_arguments)]
+pub fn icon_toggle_clipped(ui: &mut Ui, rect: Rect, clip: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
+    let visible = rect.intersect(clip);
+    let resp = ui.interact(if visible.is_positive() { visible } else { Rect::NOTHING }, id, Sense::click());
+    if !visible.is_positive() {
+        return resp;
+    }
+    let p = ui.painter().with_clip_rect(visible.intersect(ui.clip_rect()));
+    if resp.hovered() {
+        p.rect_filled(rect, 2.0, t.hover);
+    }
+    let col = if on { on_color.unwrap_or(t.icon) } else { t.text_faint };
+    icons::paint(&p, rect.shrink(rect.width() * 0.16), icon, col);
+    resp
+}
+
 /// Search field with a magnifier icon.
 pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, t: &Tokens) -> Response {
     let h = 22.0;
@@ -949,6 +970,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A Timeline track's other header icons (lock, eye, sync-lock, keyframes) kept the same size
+    /// as their track scrolled out of its half: a clipped icon toggle is cut off at the edge, never
+    /// shrunk and re-centred (what `rect.intersect(clip)` passed to `icon_toggle` would do), and
+    /// draws nothing once it is out entirely.
+    #[test]
+    fn a_clipped_icon_toggle_keeps_its_size_and_is_cut_off_at_the_clip() {
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &t);
+        let rect = Rect::from_min_size(pos2(20.0, 140.0), vec2(18.0, 18.0));
+        // the icon's own extent, which is what must not change with the clip
+        let run = |clip: Rect| {
+            let mut bounds = Rect::NOTHING;
+            let mut clips: Vec<Rect> = Vec::new();
+            for _ in 0..2 {
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    icon_toggle_clipped(ui, rect, clip, Icon::Eye, true, &t, egui::Id::unique("icon-clip"), None);
+                });
+                out.textures_delta.clear();
+                bounds = out.shapes.iter().map(|s| s.shape.visual_bounding_rect()).reduce(|a, b| a.union(b)).unwrap_or(Rect::NOTHING);
+                clips = out.shapes.iter().map(|s| s.clip_rect).collect();
+            }
+            (bounds, clips)
+        };
+        let full = run(Rect::from_min_max(pos2(0.0, 100.0), pos2(200.0, 300.0)));
+        assert!(!full.1.is_empty(), "the icon draws when it is in view");
+        // a clip cutting the button in half, from below and from above
+        for cut in [Rect::from_min_max(pos2(0.0, 149.0), pos2(200.0, 300.0)), Rect::from_min_max(pos2(0.0, 100.0), pos2(200.0, 145.0))] {
+            let (bounds, clips) = run(cut);
+            assert_eq!(bounds, full.0, "a partly clipped icon changed size");
+            for c in clips {
+                assert!(cut.contains_rect(c), "an icon drew outside its clip: {c:?}");
+            }
+        }
+        // scrolled out entirely: nothing is drawn
+        assert!(run(Rect::from_min_max(pos2(0.0, 100.0), pos2(200.0, 130.0))).1.is_empty(), "an out-of-clip icon still drew");
     }
 
     /// Clicking a `hot_number` selects its whole value, ready to be typed over.
