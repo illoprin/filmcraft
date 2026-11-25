@@ -7,7 +7,8 @@
 //!   paragraph-text layer whose box is the dragged rectangle; click on a text layer → caret at
 //!   the click. Typing edits the text (one undo step per typing session); arrows, Home/End,
 //!   Shift-selection, ⌘A, ⌘C/⌘X/⌘V, Return (new line) and Esc (stop editing) work as in a text
-//!   field. Double-clicking a text layer with the Selection tool also edits it.
+//!   field. Double-clicking a text layer — with the Selection tool or while the Type tool edits
+//!   it — edits it with the word under the pointer selected.
 //! - **Selection tool:** click selects a layer (bounding box with handles and anchor point); drag
 //!   moves it; drag the anchor point to move that alone. What a handle does depends on the layer
 //!   (see `HandleDrag`): point text scales about its anchor point, a paragraph-text box is

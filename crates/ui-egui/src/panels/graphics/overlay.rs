@@ -536,16 +536,23 @@ fn click(
         let in_edit = edit_view.is_some_and(|v| v.hit(p));
         match tool {
             // a click in the text being edited puts the caret there (Shift extends the selection),
-            // as a press that becomes a drag already does (#2430)
+            // as a press that becomes a drag already does (#2430); a double-click selects the word
+            // under the pointer, whichever tool is editing
             _ if in_edit => {
                 if let (Some(v), Some(mut ed)) = (edit_view, editing.clone())
                     && let Some(tp) = text_of(&v.spec)
                     && let Some((x, y)) = v.to_local(p)
                 {
                     let previous_selection = (ed.caret, ed.anchor);
-                    ed.caret = text_layout(tp).hit(x, y);
-                    if !ui.input(|i| i.modifiers.shift) {
-                        ed.anchor = ed.caret;
+                    let caret = text_layout(tp).hit(x, y);
+                    if resp.double_clicked() {
+                        let (a, b) = word_range(&tp.text, caret);
+                        (ed.anchor, ed.caret) = (a, b);
+                    } else {
+                        ed.caret = caret;
+                        if !ui.input(|i| i.modifiers.shift) {
+                            ed.anchor = ed.caret;
+                        }
                     }
                     if previous_selection != (ed.caret, ed.anchor) {
                         app.invalidate_ime_composition();
@@ -556,6 +563,14 @@ fn click(
             Tool::Type | Tool::VerticalType => {
                 if let Some(v) = views.iter().find(|v| v.is_text() && v.hit(p)) {
                     start_edit_at(app, ui, v, p, actions);
+                    // with the Type tool a double-click on a text layer selects the word there, as
+                    // the Selection tool already does
+                    if resp.double_clicked()
+                        && let (Some(tp), Some(e)) = (text_of(&v.spec), app.ui.gfx_edit.as_mut())
+                    {
+                        let (a, b) = word_range(&tp.text, e.caret);
+                        (e.anchor, e.caret) = (a, b);
+                    }
                 } else {
                     end_edit(app, ui);
                     let (command, prm) = new_text_action(app, pic, frame, p, None);

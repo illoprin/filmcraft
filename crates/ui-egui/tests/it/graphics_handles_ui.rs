@@ -1989,6 +1989,22 @@ fn double_click_and_select_all_select_the_text_being_edited() {
     assert_eq!(d.harness.state().session.state.selection, selection, "and leaves the timeline selection alone");
 }
 
+/// With the Type tool, double-clicking the text while it is edited selects the word under the
+/// pointer — the same as the Selection tool, through the text editor's own click handling.
+#[test]
+fn type_tool_double_click_selects_the_word_being_edited() {
+    let mut d = Driver::new();
+    let clip = d.exec("graphics.newText", json!({"text": "Alpha Beta", "position": [600, 500], "size": 120}))["clip"].as_u64().unwrap();
+    d.ok("ui.set", json!({"tool": "Type"}));
+    d.frames(3);
+    // 80% along the text lands in the second word, "Beta" (bytes 6..10)
+    let r = d.rect(&format!("program.layer.{clip}.0"));
+    d.ok("ui.click", json!({"x": r[0] + r[2] * 0.8, "y": r[1] + r[3] / 2.0, "count": 2}));
+    d.frames(4);
+    let edit = |d: &Driver| d.harness.state().ui.gfx_edit.as_ref().map(|e| (e.clip, e.anchor, e.caret));
+    assert_eq!(edit(&d), Some((clip, 6, 10)), "the Type tool double-click selects the word under the pointer");
+}
+
 /// #1953: while a graphic's text is edited, the native macOS menu's Copy and Cut (the menu bar
 /// takes ⌘C and ⌘X first) copy the selected text, not the graphic clip, and Paste asks the window
 /// for the clipboard text instead of pasting clips.
