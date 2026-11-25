@@ -542,6 +542,11 @@ fn to_project(project: &film::Project, root: film::ItemId) -> Result<shared::Pro
                 shared::ItemKind::Uncarried { what: "graphic clip".into(), width: *width, height: *height, rate: *rate, duration: Tick::ZERO },
                 serde_json::json!({}),
             ),
+            // A text style is a project asset, not a timeline item; it never appears in a sequence.
+            film::ItemKind::TextStyle(_) => (
+                shared::ItemKind::Uncarried { what: "text style".into(), width: 0, height: 0, rate: Default::default(), duration: Tick::ZERO },
+                serde_json::json!({}),
+            ),
         };
         out.items.insert(
             shared::ItemId(id.0),

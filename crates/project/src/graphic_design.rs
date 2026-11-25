@@ -41,11 +41,16 @@ pub struct LayerExtra {
     /// Responsive Design – Position.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pin: Option<Pin>,
+    /// The text style asset this text layer follows
+    /// ([`ItemKind::TextStyle`](crate::ItemKind::TextStyle)); the layer keeps its own parameters,
+    /// so the link only records where an edit goes when pushed back to the style.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style: Option<crate::ItemId>,
 }
 
 impl LayerExtra {
     pub fn is_empty(&self) -> bool {
-        self.uid == 0 && self.runs.is_empty() && self.pin.is_none()
+        self.uid == 0 && self.runs.is_empty() && self.pin.is_none() && self.style.is_none()
     }
 }
 

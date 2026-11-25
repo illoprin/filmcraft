@@ -590,7 +590,7 @@ pub fn merge_into(target: &mut Project, fragment: Imported, bin: Option<BinId>) 
                     mk.id = MarkerId(target.alloc_id());
                 }
             }
-            ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => {}
+            ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } | ItemKind::TextStyle(_) => {}
         }
         new_items.insert(it.id, it);
     }

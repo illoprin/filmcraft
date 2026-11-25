@@ -102,6 +102,7 @@ impl Project {
                     id = *parent;
                     continue;
                 }
+                ItemKind::TextStyle(_) => None,
             };
         }
         None
@@ -123,6 +124,7 @@ impl Project {
                     id = *parent;
                     continue;
                 }
+                ItemKind::TextStyle(_) => None,
             };
         }
         None

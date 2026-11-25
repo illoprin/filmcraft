@@ -742,7 +742,7 @@ pub(crate) fn base_layer(
                 None => render_seq(project, nested, ft, RenderOptions { captions: true, ..sub }, sources),
             }
         }
-        ItemKind::AdjustmentLayer { .. } => return None,
+        ItemKind::AdjustmentLayer { .. } | ItemKind::TextStyle(_) => return None,
         ItemKind::Graphic { .. } => {
             // standard effects work on the graphic at source resolution, then Motion places it
             let (gw, gh) = (((src_size.0 as f32 * want).ceil() as usize).max(1), ((src_size.1 as f32 * want).ceil() as usize).max(1));

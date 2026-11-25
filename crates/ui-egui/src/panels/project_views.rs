@@ -29,6 +29,8 @@ pub fn item_icon(k: &ItemKind) -> Icon {
         ItemKind::Sequence(_) => Icon::Sequence,
         ItemKind::Subclip { .. } => Icon::Film,
         ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => Icon::Adjust,
+        // A text style asset: the Type tool's T.
+        ItemKind::TextStyle(_) => Icon::Type,
     }
 }
 

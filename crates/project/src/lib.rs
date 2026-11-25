@@ -25,6 +25,7 @@ pub mod mask;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
+pub mod text_style;
 pub mod transcript;
 pub mod vtransition;
 
@@ -45,6 +46,7 @@ pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
 pub use multicam::{Camera, MergedClip, MulticamAudio, MulticamSel, MulticamSource};
 pub use narration::{Narration, VocalPitch};
+pub use text_style::TextStyle;
 pub use transcript::{Speaker, Transcript, Word};
 
 macro_rules! id_type {

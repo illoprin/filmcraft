@@ -62,6 +62,7 @@ pub mod slip;
 pub mod source_monitor;
 pub mod still_migration;
 pub mod sync;
+pub mod text_style;
 pub mod transcript;
 pub mod trim;
 pub mod voiceover;
@@ -1428,6 +1429,7 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
                 continue;
             }
             filmcraft_project::ItemKind::AdjustmentLayer { .. } | filmcraft_project::ItemKind::Graphic { .. } => None,
+            filmcraft_project::ItemKind::TextStyle(_) => None,
         };
     }
     None

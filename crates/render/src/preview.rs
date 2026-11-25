@@ -344,6 +344,7 @@ fn hash_source(h: &mut Fnv128, project: &Project, id: ItemId, kind: TrackKind, d
         }
         ItemKind::AdjustmentLayer { .. } => h.json(&("adjustment", &pi.kind)),
         ItemKind::Graphic { .. } => h.json(&("graphic", &pi.kind)),
+        ItemKind::TextStyle(_) => h.json(&("text style", &pi.kind)),
         ItemKind::Sequence(s) => {
             h.json(&("sequence", &s.settings));
             if kind == TrackKind::Audio {
@@ -468,6 +469,8 @@ fn decode_cost_ms(project: &Project, id: ItemId, depth: u32) -> f64 {
         ItemKind::AdjustmentLayer { .. } => 0.0,
         // vector layers are drawn on the CPU (cached while static)
         ItemKind::Graphic { .. } => 1.5,
+        // a text style is not a source; it never reaches a clip's render
+        ItemKind::TextStyle(_) => 0.0,
         ItemKind::Sequence(s) => {
             if depth > 8 {
                 return 0.0;

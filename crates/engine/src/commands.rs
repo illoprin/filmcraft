@@ -4298,6 +4298,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::essential_sound::commands());
     v.extend(crate::color::commands());
     v.extend(crate::graphics::commands());
+    v.extend(crate::text_style::commands());
     v.extend(crate::graphic_templates::commands());
     v.extend(crate::shortcuts::commands());
     v.extend(crate::relink::commands());
@@ -4558,7 +4559,7 @@ pub(crate) fn json_to_param(template: &ParamValue, v: &Value) -> Option<ParamVal
 }
 
 /// Encode the accepted parameter value in the JSON shape returned to command callers.
-fn param_value_to_json(value: &ParamValue) -> Value {
+pub(crate) fn param_value_to_json(value: &ParamValue) -> Value {
     match value {
         ParamValue::Float(value) => json!(value),
         ParamValue::Vec2(value) => json!([value.x, value.y]),

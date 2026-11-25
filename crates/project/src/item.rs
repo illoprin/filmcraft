@@ -138,6 +138,10 @@ pub enum ItemKind {
         height: u32,
         rate: FrameRate,
     },
+    /// A reusable text style (`text_style`): the saved appearance of a text layer, shown in the
+    /// Project panel and applied to text layers from there or from the Essential Graphics panel.
+    /// Not a timeline item.
+    TextStyle(Box<crate::text_style::TextStyle>),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -190,6 +194,7 @@ impl ProjectItem {
             ItemKind::Media(m) => m.info.has_video(),
             ItemKind::Sequence(_) | ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => true,
             ItemKind::Subclip { .. } => true,
+            ItemKind::TextStyle(_) => false,
         }
     }
     pub fn has_audio(&self) -> bool {
@@ -206,6 +211,7 @@ impl ProjectItem {
             ItemKind::Subclip { range, .. } => range.duration,
             ItemKind::AdjustmentLayer { duration, .. } => *duration,
             ItemKind::Graphic { .. } => Tick(3600 * TICKS_PER_SECOND),
+            ItemKind::TextStyle(_) => Tick::ZERO,
         }
     }
     pub fn frame_rate(&self) -> FrameRate {
@@ -213,7 +219,7 @@ impl ProjectItem {
             ItemKind::Media(m) => m.frame_rate(),
             ItemKind::Sequence(s) => s.settings.frame_rate,
             ItemKind::AdjustmentLayer { rate, .. } | ItemKind::Graphic { rate, .. } => *rate,
-            ItemKind::Subclip { .. } => FrameRate::default(),
+            ItemKind::Subclip { .. } | ItemKind::TextStyle(_) => FrameRate::default(),
         }
     }
     /// Human-readable media type for the Project panel "Media Type" column.
@@ -232,6 +238,7 @@ impl ProjectItem {
             ItemKind::Subclip { .. } => "Subclip",
             ItemKind::AdjustmentLayer { .. } => "Adjustment Layer",
             ItemKind::Graphic { .. } => "Graphic",
+            ItemKind::TextStyle(_) => "Text Style",
         }
     }
 }
