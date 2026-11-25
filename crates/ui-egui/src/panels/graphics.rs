@@ -60,7 +60,7 @@ pub use properties::{dialogs, properties};
 #[cfg(test)]
 use text_edit::{
     apply_surrounding_deletion, char_boundary_ceil, char_boundary_floor, clamp_edit_offsets, next_n_chars, prev_n_chars, surrounding_byte_deletion_ranges,
-    text_edit,
+    text_edit, word_range,
 };
 
 /// A graphic layer visible at the playhead, with its layer→screen transform.
@@ -116,7 +116,7 @@ pub fn graphic_selected(app: &FilmcraftApp) -> bool {
 mod ime_byte_delete_tests {
     use super::{
         GfxEdit, apply_surrounding_deletion, char_boundary_ceil, char_boundary_floor, clamp_edit_offsets, graphics_ime_target, next_n_chars, prev_n_chars,
-        surrounding_byte_deletion_ranges,
+        surrounding_byte_deletion_ranges, word_range,
     };
 
     /// Floor/ceil byte offsets clamp to UTF-8 character boundaries, including offsets past the
@@ -172,6 +172,24 @@ mod ime_byte_delete_tests {
         clamp_edit_offsets(s, &mut ed);
         assert_eq!((ed.caret, ed.anchor), (0, 2), "offsets inside the two characters move to boundaries");
         assert_eq!(s.get(ed.caret..ed.anchor), Some("é"));
+    }
+
+    /// A double-click selects the whole non-whitespace word under the caret, the whitespace run
+    /// when it sits on whitespace, and nothing in empty text; a caret inside a multi-byte
+    /// character clamps to its start instead of splitting it.
+    #[test]
+    fn double_click_selects_the_word_under_the_caret() {
+        let s = "Alpha beta gamma";
+        assert_eq!(word_range(s, 2), (0, 5), "inside the first word");
+        assert_eq!(word_range(s, 0), (0, 5), "at the first word's start");
+        assert_eq!(word_range(s, 5), (0, 5), "a caret at a word's end still takes the word");
+        assert_eq!(word_range(s, 6), (6, 10), "a caret at the next word's start takes it");
+        assert_eq!(word_range(s, 8), (6, 10), "inside the second word");
+        assert_eq!(word_range(s, s.len()), (11, 16), "at the end selects the last word");
+        assert_eq!(word_range("", 0), (0, 0), "empty text");
+        assert_eq!(word_range("  ", 1), (0, 2), "whitespace only");
+        // byte 1 is inside "é" (bytes 0..2): clamped to the boundary, then the word selected
+        assert_eq!(word_range("éx y", 1), (0, 3));
     }
 
     /// Character-count deletion stops at both text ends and never splits a character, even for

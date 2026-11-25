@@ -4,7 +4,7 @@ use super::handles::{
 };
 use super::ime::{current_graphics_ime_target, draw_preedit, graphics_ime_target, note_graphics_ime_editor, reconcile_gfx_edit};
 use super::layer_identity::{current_layer_text, current_layer_uid, layer_display_name_view};
-use super::text_edit::{char_boundary_floor, text_edit, text_of};
+use super::text_edit::{char_boundary_floor, text_edit, text_of, word_range};
 use super::{
     Affine, ClipId, Color32, FilmcraftApp, GfxEdit, ImeTarget, ItemKind, LayerView, Pos2, Rect, Sense, Stroke, StrokeKind, Tool, Value, Vec2, eval_layer, json,
     layer_indices, pos2, selected_graphic, text_layout, vec2,
@@ -568,9 +568,10 @@ fn click(
                 if resp.double_clicked() {
                     if let Some(v) = views.iter().find(|v| v.is_text() && v.hit(p)) {
                         start_edit_at(app, ui, v, p, actions);
-                        // double-click selects all the text so typing replaces it, as in Premiere
+                        // double-click selects the word under the pointer, as in a text editor
                         if let (Some(tp), Some(e)) = (text_of(&v.spec), app.ui.gfx_edit.as_mut()) {
-                            (e.anchor, e.caret) = (0, tp.text.len());
+                            let (a, b) = word_range(&tp.text, e.caret);
+                            (e.anchor, e.caret) = (a, b);
                         }
                     }
                 } else if let Some(v) = views.iter().find(|v| v.hit(p)) {

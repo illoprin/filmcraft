@@ -679,3 +679,34 @@ fn word_right(s: &str, i: usize) -> usize {
     }
     it.peek().map_or(s.len(), |(b, _)| i + b)
 }
+
+/// The `(start, end)` of the word a double-click at byte `i` selects: the whole run of
+/// non-whitespace characters around `i` (the same word boundaries Alt+arrow uses), or a run of
+/// whitespace only when both neighbours are whitespace, as a text editor does. `i` is clamped to a
+/// character boundary, and an empty text gives `(0, 0)`.
+pub(super) fn word_range(s: &str, i: usize) -> (usize, usize) {
+    let i = char_boundary_floor(s, i);
+    // A caret between a word and a space belongs to the word, so the space is only selected when
+    // both neighbours are whitespace: a double-click on a word's last or first character selects
+    // the word, not the gap beyond it.
+    let left_ws = i == 0 || s[..i].chars().next_back().is_some_and(char::is_whitespace);
+    let right_ws = i >= s.len() || s[i..].chars().next().is_some_and(char::is_whitespace);
+    let whitespace = left_ws && right_ws;
+    let mut a = i;
+    while a > 0 {
+        let Some((j, c)) = s[..a].char_indices().next_back() else { break };
+        if c.is_whitespace() != whitespace {
+            break;
+        }
+        a = j;
+    }
+    let mut b = i;
+    while b < s.len() {
+        let Some(c) = s[b..].chars().next() else { break };
+        if c.is_whitespace() != whitespace {
+            break;
+        }
+        b += c.len_utf8();
+    }
+    (a, b)
+}

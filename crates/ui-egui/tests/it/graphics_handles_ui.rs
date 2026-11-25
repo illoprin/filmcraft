@@ -1963,8 +1963,9 @@ fn a_hidden_layer_has_no_box_and_cannot_be_clicked() {
     assert_eq!(ids(&mut d).len(), 14);
 }
 
-/// A double-click on a text layer edits it with all its text selected, so typing replaces it; while
-/// it is edited, Select All selects the text again, not the timeline clips, as in Premiere (#1102).
+/// A double-click on a text layer edits it with the word under the pointer selected (for the
+/// one-word "Title", the whole text), so typing replaces that word; while it is edited, Select All
+/// selects the text again, not the timeline clips, as in Premiere (#1102).
 #[test]
 fn double_click_and_select_all_select_the_text_being_edited() {
     let mut d = Driver::new();
