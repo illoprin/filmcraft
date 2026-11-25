@@ -992,3 +992,69 @@ fn applied_effects_render_the_same_before_or_after_the_intrinsic_ones() {
     }
     check(s, clip, "video clip");
 }
+
+/// Graphic layers copy to the one application clipboard and paste into the same graphic or a
+/// different one: the copies keep their content and stacking, get fresh identities, and are
+/// selected, all as one undo step.
+#[test]
+fn graphic_layers_copy_and_paste_within_and_between_clips() {
+    let mut s = demo();
+    let clip = ClipId(s.execute("graphics.newText", json!({"text": "Title", "position": [400, 300]})).unwrap()["clip"].as_u64().unwrap());
+    s.execute("graphics.newShape", json!({"shape": "rectangle", "clip": clip.0, "position": [900, 300], "size": [200, 100]})).unwrap();
+    let list = |s: &mut Session, clip: u64| -> Vec<(String, u64)> {
+        s.execute("graphics.list", json!({"clip": clip})).unwrap()["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| (l["name"].as_str().unwrap().to_string(), l["uid"].as_u64().unwrap()))
+            .collect()
+    };
+    let before = list(&mut s, clip.0);
+    assert_eq!(before.len(), 2);
+    assert_eq!(before[0].0, "Title");
+    assert!(before[1].0.starts_with("Shape"), "a shape layer: {before:?}");
+
+    // paste into another graphic clip
+    let other = ClipId(s.execute("graphics.newText", json!({"text": "Second"})).unwrap()["clip"].as_u64().unwrap());
+    s.execute("graphics.copyLayers", json!({"clip": clip.0, "layers": [0, 1]})).unwrap();
+    s.execute("graphics.pasteLayers", json!({"clip": other.0})).unwrap();
+    let pasted = list(&mut s, other.0);
+    assert_eq!(pasted.len(), 3, "the target keeps its own layer and gains the two copies");
+    assert_eq!(pasted[0].0, "Second", "the target's own layer stays below the copies");
+    assert_eq!(pasted[1].0, "Title", "the text copy keeps its content");
+    assert!(pasted[2].0.starts_with("Shape"), "the shape copy keeps its kind: {pasted:?}");
+    let unique: std::collections::BTreeSet<u64> = pasted.iter().map(|(_, u)| *u).collect();
+    assert_eq!(unique.len(), 3, "every layer in the target clip has its own identity: {pasted:?}");
+    assert_eq!(s.state.graphic_layers, vec![1, 2], "the pasted layers are selected");
+
+    // the same clip: copy the back layer and paste it above itself
+    s.execute("graphics.selectLayer", json!({"clip": clip.0, "layers": [0]})).unwrap();
+    s.execute("graphics.copyLayers", json!({"clip": clip.0})).unwrap();
+    s.execute("graphics.pasteLayers", json!({"clip": clip.0})).unwrap();
+    let after = list(&mut s, clip.0);
+    assert_eq!(after.len(), 3, "the same clip gains a copy");
+    assert_eq!(after[1].0, "Title", "the copy lands above the selected layer");
+    assert_eq!(after[0].1, before[0].1, "the original keeps its identity");
+    assert_eq!(after[2].1, before[1].1, "the other original keeps its identity");
+    assert_ne!(after[1].1, before[0].1, "the copy gets a fresh identity");
+    assert_eq!(s.state.graphic_layers, vec![1], "the copy is selected");
+
+    // undo and redo restore each state, identities included
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(list(&mut s, clip.0), before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(list(&mut s, clip.0), after);
+}
+
+/// Copying layers replaces whatever the one application clipboard held, and pasting with nothing
+/// copied is an error named after the command.
+#[test]
+fn graphic_layer_copy_takes_the_one_clipboard_and_pasting_it_empty_fails() {
+    let mut s = demo();
+    let clip = ClipId(s.execute("graphics.newText", json!({"text": "Title"})).unwrap()["clip"].as_u64().unwrap());
+    let err = s.execute("graphics.pasteLayers", json!({"clip": clip.0})).unwrap_err().to_string();
+    assert!(err.contains("no layers have been copied"), "{err}");
+    s.state.effect_clipboard = Some(Default::default());
+    s.execute("graphics.copyLayers", json!({"clip": clip.0, "layers": [0]})).unwrap();
+    assert!(s.state.graphic_layers_clipboard.is_some() && s.state.effect_clipboard.is_none(), "the one clipboard now holds the layers");
+}

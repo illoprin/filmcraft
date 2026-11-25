@@ -546,6 +546,22 @@ fn layers_section(
                     actions.push(("graphics.deleteLayer".into(), json!({"clip": clip.0, "layer": l})));
                 }
             }
+            // Copy and Paste layers on the one application clipboard: paste into this graphic or
+            // another graphic clip (the command addresses the graphic under the playhead when none
+            // is selected)
+            ui.add_space(8.0);
+            let can_paste = app.session.state.graphic_layers_clipboard.is_some();
+            for (cmd, tip, icon, enabled) in
+                [("graphics.copyLayers", tl!("Copy Layer"), Icon::Copy, sel.is_some()), ("graphics.pasteLayers", tl!("Paste Layer"), Icon::Paste, can_paste)]
+            {
+                let (r, resp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
+                let resp = resp.on_hover_text(tip);
+                icons::paint(ui.painter(), r.shrink(5.0), icon, if enabled && resp.hovered() { t.text } else { t.text_dim });
+                autos.push((cmd.into(), r, tip.into()));
+                if enabled && resp.clicked() {
+                    actions.push((cmd.into(), json!({"clip": clip.0})));
+                }
+            }
         });
         for (li, &ei) in idx.iter().enumerate().rev() {
             let e = &it.effects[ei];

@@ -201,7 +201,12 @@ pub(crate) fn has_project_selection(s: &Session) -> std::result::Result<(), Stri
 }
 fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
-    if s.state.clipboard.is_empty() && s.state.caption_clipboard.is_empty() && s.state.effect_clipboard.is_none() && s.state.keyframe_clipboard.is_none() {
+    if s.state.clipboard.is_empty()
+        && s.state.caption_clipboard.is_empty()
+        && s.state.effect_clipboard.is_none()
+        && s.state.keyframe_clipboard.is_none()
+        && s.state.graphic_layers_clipboard.is_none()
+    {
         Err("clipboard is empty".into())
     } else {
         Ok(())
@@ -4608,6 +4613,7 @@ fn set_clipboard(st: &mut crate::EditorState, (clips, markers): Clipboard) {
     st.effect_clipboard = None;
     st.keyframe_clipboard = None;
     st.track_fx_clipboard = None;
+    st.graphic_layers_clipboard = None;
 }
 
 /// Put a copy of effects on the application clipboard: everything else it held goes, as the
@@ -4618,6 +4624,7 @@ pub(crate) fn set_effect_clipboard(s: &mut Session, effects: crate::clipboard::E
     s.state.caption_clipboard.clear();
     s.state.keyframe_clipboard = None;
     s.state.track_fx_clipboard = None;
+    s.state.graphic_layers_clipboard = None;
     s.state.effect_clipboard = Some(effects);
 }
 
@@ -4628,6 +4635,7 @@ pub(crate) fn set_keyframe_clipboard(s: &mut Session, keyframes: crate::clipboar
     s.state.caption_clipboard.clear();
     s.state.effect_clipboard = None;
     s.state.track_fx_clipboard = None;
+    s.state.graphic_layers_clipboard = None;
     s.state.keyframe_clipboard = Some(keyframes);
 }
 
@@ -4639,7 +4647,20 @@ pub(crate) fn set_track_effects_clipboard(s: &mut Session, effects: crate::clipb
     s.state.caption_clipboard.clear();
     s.state.effect_clipboard = None;
     s.state.keyframe_clipboard = None;
+    s.state.graphic_layers_clipboard = None;
     s.state.track_fx_clipboard = Some(effects);
+}
+
+/// Put graphic layers copied in Essential Graphics on the application clipboard, replacing
+/// everything else it held (one clipboard for the whole application).
+pub(crate) fn set_graphic_layers_clipboard(s: &mut Session, layers: crate::clipboard::GraphicLayersClipboard) {
+    s.state.clipboard.clear();
+    s.state.clipboard_markers.clear();
+    s.state.caption_clipboard.clear();
+    s.state.effect_clipboard = None;
+    s.state.keyframe_clipboard = None;
+    s.state.track_fx_clipboard = None;
+    s.state.graphic_layers_clipboard = Some(layers);
 }
 
 /// Put a Lift or Extract cut on the clipboard; returns how many clips it holds (0 leaves the

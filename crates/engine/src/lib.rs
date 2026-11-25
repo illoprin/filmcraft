@@ -511,6 +511,11 @@ pub struct EditorState {
     /// [`clipboard`]), so any other Copy empties this one.
     #[serde(skip)]
     pub track_fx_clipboard: Option<clipboard::TrackEffectsClipboard>,
+    /// Graphic layers copied in Essential Graphics ([`clipboard::GraphicLayersClipboard`]), or
+    /// `None` unless they were the last Copy: the application holds one clipboard (see
+    /// [`clipboard`]), so any other Copy empties this one.
+    #[serde(skip)]
+    pub graphic_layers_clipboard: Option<clipboard::GraphicLayersClipboard>,
     /// The last Edit ▸ Find… (Find Next continues it).
     #[serde(default)]
     pub find: Option<project_tools::FindState>,

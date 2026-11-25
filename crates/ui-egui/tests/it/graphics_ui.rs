@@ -765,6 +765,30 @@ fn font_picker_searches_families() {
     assert!(!shown(&mut d, "Inter"), "a family the query does not match is filtered out");
 }
 
+/// The Layers section's Copy and Paste buttons put a layer on the one application clipboard and
+/// paste it back as a copy with its own identity.
+#[test]
+fn layers_copy_and_paste_buttons() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let clip = d.exec("graphics.newText", json!({"text": "Title"}))["clip"].as_u64().unwrap();
+    d.exec("graphics.selectLayer", json!({"clip": clip, "layers": [0]}));
+    d.frames(3);
+    let uids = |d: &mut Driver| -> Vec<u64> {
+        d.exec("graphics.list", json!({"clip": clip}))["layers"].as_array().unwrap().iter().map(|l| l["uid"].as_u64().unwrap()).collect()
+    };
+    assert_eq!(uids(&mut d).len(), 1);
+    assert!(d.harness.state().session.state.graphic_layers_clipboard.is_none());
+    d.ok("ui.click", json!({"id": "graphics.copyLayers"}));
+    d.frames(3);
+    assert!(d.harness.state().session.state.graphic_layers_clipboard.is_some(), "Copy puts the layer on the clipboard");
+    d.ok("ui.click", json!({"id": "graphics.pasteLayers"}));
+    d.frames(3);
+    let after = uids(&mut d);
+    assert_eq!(after.len(), 2, "Paste adds a copy");
+    assert_ne!(after[0], after[1], "the copy has its own identity");
+}
+
 /// #4625: with several text clips selected, a text property changed in the Properties panel
 /// (Font Size, Font) is set on every selected text clip, not only the first one shown there. A
 /// clip on a locked track keeps its value, and one undo restores each clip's own size.

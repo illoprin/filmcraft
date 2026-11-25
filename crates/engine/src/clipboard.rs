@@ -2,14 +2,24 @@
 //!
 //! Whatever was copied last is what [`Session`](crate::Session)'s `edit.paste` applies, wherever it
 //! was copied from: timeline clips with their sequence markers (`EditorState::clipboard`), captions,
-//! the Effect Controls effects in [`EffectClipboard`], or the keyframes copied from its lane in
-//! [`EffectKeyframeClipboard`]. Every Copy replaces the clipboard, so only one of them holds
+//! the Effect Controls effects in [`EffectClipboard`], the keyframes copied from its lane in
+//! [`EffectKeyframeClipboard`], or the graphic layers copied in Essential Graphics in
+//! [`GraphicLayersClipboard`]. Every Copy replaces the clipboard, so only one of them holds
 //! anything at a time — copy keyframes and Paste pastes keyframes, copy clips and Paste pastes
 //! clips.
 
 use filmcraft_project::{EffectInstance, Keyframe};
 use filmcraft_time::Tick;
 use serde::{Deserialize, Serialize};
+
+/// Graphic layers copied in Essential Graphics (`graphics.copyLayers` / `graphics.pasteLayers`).
+/// A layer is a graphic effect instance, so a paste clones it into the target clip, assigning fresh
+/// layer uids. No source clip or time is kept: a layer's keyframes are in its parameters, so a
+/// paste inserts the same values without retiming.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+pub struct GraphicLayersClipboard {
+    pub layers: Vec<EffectInstance>,
+}
 
 /// Track inserts copied in the Audio Track Mixer (`mixer.copyInserts` / `mixer.pasteInserts`).
 /// Track effects are sequence-level, so there is no clip or source time to retime: pasting appends
