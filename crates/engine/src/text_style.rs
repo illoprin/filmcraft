@@ -26,8 +26,8 @@ use crate::{EngineError, Result, Session};
 type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
-fn spec(id: &'static str, label: &'static str, params: &'static str, enabled: Enabled, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
+fn spec(id: &'static str, label: &'static str, journal: bool, params: &'static str, enabled: Enabled, run: Run) -> CommandSpec {
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal, named: crate::commands::NamedKeys::NONE }
 }
 
 /// The file format marker of a `.fstyle` file.
@@ -311,6 +311,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "textStyle.create",
             "Create Text Style",
+            true,
             r#"{"clip":id?,"layer":n|name?,"name":str?,"bin":binId?}"#,
             |s| {
                 crate::commands::has_seq(s)?;
@@ -321,6 +322,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "textStyle.apply",
             "Apply Text Style",
+            true,
             r#"{"style":id,"clip":id?,"clips":[id]? (default: the selected clips)"}"#,
             |s| {
                 crate::commands::has_seq(s)?;
@@ -331,6 +333,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "textStyle.push",
             "Update Text Style",
+            true,
             r#"{"clip":id?,"layer":n|name?"}"#,
             |s| {
                 crate::commands::has_seq(s)?;
@@ -341,6 +344,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "textStyle.unlink",
             "Unlink Text Style",
+            true,
             r#"{"clip":id?,"layer":n|name?"}"#,
             |s| {
                 crate::commands::has_seq(s)?;
@@ -348,9 +352,9 @@ pub fn commands() -> Vec<CommandSpec> {
             },
             unlink,
         ),
-        spec("textStyle.rename", "Rename Text Style", r#"{"style":id,"name":str}"#, has_style, rename),
-        spec("textStyle.export", "Export Text Style", r#"{"style":id,"path":str,"name":str?}"#, has_style, export),
-        spec("textStyle.import", "Import Text Style", r#"{"path":str,"bin":binId?}"#, always, import),
+        spec("textStyle.rename", "Rename Text Style", true, r#"{"style":id,"name":str}"#, has_style, rename),
+        spec("textStyle.export", "Export Text Style", false, r#"{"style":id,"path":str,"name":str?}"#, has_style, export),
+        spec("textStyle.import", "Import Text Style", true, r#"{"path":str,"bin":binId?}"#, always, import),
     ]
 }
 
