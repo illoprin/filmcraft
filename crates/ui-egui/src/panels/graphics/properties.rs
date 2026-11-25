@@ -496,6 +496,18 @@ fn letter_button(ui: &mut egui::Ui, text: &str, tip: &str, on: bool, t: &Tokens,
     resp.on_hover_text(tip)
 }
 
+/// An icon button with the same hover box as the letter and glyph buttons, so the Layers section's
+/// Delete / Copy / Paste icons react like the rest of the panel instead of only changing tint.
+fn icon_button(ui: &mut egui::Ui, icon: Icon, tip: &str, enabled: bool, t: &Tokens) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
+    let resp = resp.on_hover_text(tip);
+    if enabled && resp.hovered() {
+        ui.painter().rect_filled(r, 3.0, t.hover);
+    }
+    icons::paint(ui.painter(), r.shrink(4.0), icon, if enabled && resp.hovered() { t.text } else { t.text_dim });
+    resp
+}
+
 /// The graphic editor (Properties panel / Essential Graphics ▸ Edit).
 /// The Layers section of the Essential Graphics panel: new-layer buttons, arrange and delete,
 /// and the front-first list of the clip's layers.
@@ -539,10 +551,9 @@ fn layers_section(
                         actions.push(("graphics.arrangeLayer".into(), json!({"clip": clip.0, "layer": l, "to": to})));
                     }
                 }
-                let (dr, dresp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
-                icons::paint(ui.painter(), dr.shrink(4.0), Icon::Trash, if dresp.hovered() { t.text } else { t.text_dim });
-                autos.push(("graphics.deleteLayer".into(), dr, "Delete Layer".into()));
-                if dresp.on_hover_text(tl!("Delete Layer")).clicked() {
+                let dresp = icon_button(ui, Icon::Trash, tl!("Delete Layer"), true, &t);
+                autos.push(("graphics.deleteLayer".into(), dresp.rect, "Delete Layer".into()));
+                if dresp.clicked() {
                     actions.push(("graphics.deleteLayer".into(), json!({"clip": clip.0, "layer": l})));
                 }
             }
@@ -554,10 +565,8 @@ fn layers_section(
             for (cmd, tip, icon, enabled) in
                 [("graphics.copyLayers", tl!("Copy Layer"), Icon::Copy, sel.is_some()), ("graphics.pasteLayers", tl!("Paste Layer"), Icon::Paste, can_paste)]
             {
-                let (r, resp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
-                let resp = resp.on_hover_text(tip);
-                icons::paint(ui.painter(), r.shrink(5.0), icon, if enabled && resp.hovered() { t.text } else { t.text_dim });
-                autos.push((cmd.into(), r, tip.into()));
+                let resp = icon_button(ui, icon, tip, enabled, &t);
+                autos.push((cmd.into(), resp.rect, tip.into()));
                 if enabled && resp.clicked() {
                     actions.push((cmd.into(), json!({"clip": clip.0})));
                 }
