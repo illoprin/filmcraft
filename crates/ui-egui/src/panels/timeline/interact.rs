@@ -1113,6 +1113,7 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
         }
     }
     effect_drop_preview(app, ui, seq, layout);
+    text_style_drop_preview(app, ui, seq, layout);
     // ---- OS file drops imported with "drop imports to the timeline": placed at the drop point, one after another
     if let Some((items, p, viewport)) = app.pending_timeline_drop.clone()
         && viewport == ui.ctx().viewport_id()
@@ -1230,6 +1231,42 @@ fn effect_drop_preview(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                 crate::panels::clear_drag(ui);
             }
         }
+    }
+}
+
+/// Whether `it` is a graphic clip with at least one text layer a text style can be applied to.
+fn has_text_layer(it: &filmcraft_project::TrackItem) -> bool {
+    it.effects.iter().any(|e| e.effect == filmcraft_project::graphic::TEXT_LAYER)
+}
+
+/// A text style dragged from the Project panel over a graphic clip: outlines the clip it would
+/// restyle and applies the style on release.
+fn text_style_drop_preview(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout) {
+    let ctx = ui.ctx().clone();
+    let Some(style) = crate::panels::dragged_text_style(ui) else { return };
+    let Some(p) = ctx.pointer_hover_pos() else { return };
+    if !layout.content.contains(p) || !app.timeline_drop_target(ui.ctx(), p) {
+        return;
+    }
+    let Hit::Clip { clip, .. } = hit(seq, layout, p) else { return };
+    let Some((tid, it)) = seq.find_item(clip) else { return };
+    if !has_text_layer(it) {
+        return;
+    }
+    let Some(row) = layout.rows.iter().find(|r| r.track == tid) else { return };
+    let r = Rect::from_min_max(pos2(layout.x_of(it.start), row.rect.min.y), pos2(layout.x_of(it.end()), row.rect.max.y));
+    ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
+    app.auto.add("timeline.textStyleDropPreview", r, "Apply text style");
+    if ctx.input(|i| i.pointer.any_released()) {
+        // on one of several selected clips: restyle the whole selection, as Premiere does
+        let clips: Vec<u64> =
+            if app.session.state.selection.contains(&clip) { app.session.state.selection.iter().map(|c| c.0).collect() } else { vec![clip.0] };
+        if let Err(e) = app.session.execute("textStyle.apply", json!({"style": style.0, "clips": clips})) {
+            app.ui.status = e.to_string();
+        } else {
+            let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
+        }
+        crate::panels::clear_drag(ui);
     }
 }
 
@@ -1465,6 +1502,33 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                                     "timeline.clipMenu.label");
                             });
                             app.auto.add_response("timeline.clipMenu.edit.label", &menu.response, crate::i18n::t(label));
+                        });
+                        continue;
+                    }
+                    if cmd == "textStyle.apply" {
+                        // a submenu of the project's text styles; each applies to every selected clip
+                        let mut styles: Vec<(u64, String)> = app
+                            .session
+                            .project
+                            .items
+                            .iter()
+                            .filter(|(_, it)| matches!(it.kind, filmcraft_project::ItemKind::TextStyle(_)))
+                            .map(|(id, it)| (id.0, it.name.clone()))
+                            .collect();
+                        styles.sort_by_key(|(_, name)| name.to_lowercase());
+                        ui.add_enabled_ui(!sel.is_empty() && !styles.is_empty(), |ui| {
+                            let menu = ui.menu_button(crate::i18n::t(label), |ui| {
+                                for (id, name) in &styles {
+                                    if ui.button(name).clicked() {
+                                        let clips: Vec<u64> = sel.iter().map(|c| c.0).collect();
+                                        if let Err(e) = app.session.execute("textStyle.apply", json!({"style": id, "clips": clips})) {
+                                            app.ui.status = e.to_string();
+                                        }
+                                        ui.close();
+                                    }
+                                }
+                            });
+                            app.auto.add_response("timeline.clipMenu.textStyle.apply", &menu.response, crate::i18n::t(label));
                         });
                         continue;
                     }

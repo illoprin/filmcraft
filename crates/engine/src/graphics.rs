@@ -468,6 +468,7 @@ fn list_layers(s: &Session, clip: ClipId) -> Result<Value> {
                 "scale": sp.transform.scale.y * 100.0,
                 "scaleWidth": sp.transform.scale.x * 100.0,
                 "uid": extra.map_or(0, |x| x.uid),
+                "style": extra.and_then(|x| x.style).map_or(Value::Null, |s| json!(s.0)),
                 "pin": extra.and_then(|x| x.pin.as_ref()).map(|p| serde_json::to_value(p).unwrap_or_default()),
                 "styles": extra.map(|x| serde_json::to_value(&x.runs).unwrap_or_default()).unwrap_or(json!([])),
                 "localBounds": layer_local_bounds(&sp),

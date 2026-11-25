@@ -23,12 +23,17 @@ struct Driver {
 
 impl Driver {
     fn demo() -> Self {
+        Self::demo_sized(1600.0, 980.0)
+    }
+    /// A driver in a window of a given size: the defaults fit the common panels, a taller window
+    /// keeps a long Properties panel (the Text Style section sits below the fold at 980) clickable.
+    fn demo_sized(w: f32, h: f32) -> Self {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
+        let mut b = Harness::builder().with_size(egui::vec2(w, h)).with_max_steps(10_000);
         if shots.is_some() {
             b = b.wgpu().with_pixels_per_point(1.0);
         }
@@ -518,6 +523,40 @@ fn style_buttons_toggle_the_layer_without_a_selection() {
         click(&mut d);
         assert!(!on(&mut d), "second click turns {id} off");
     }
+}
+
+/// The Text Style section links a layer to a style asset, unlinks it, and (through the engine the
+/// dropdown and context menu drive) applies a style's look to another text layer.
+#[test]
+fn text_style_section_links_applies_and_unlinks() {
+    let mut d = Driver::demo_sized(1600.0, 1500.0);
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let a = d.exec("graphics.newText", json!({"text": "A", "size": 100}))["clip"].as_u64().unwrap();
+    d.exec("graphics.set", json!({"clip": a, "props": {"size": 180.0, "tracking": 25.0}}));
+    d.exec("graphics.selectLayer", json!({"clip": a, "layers": [0]}));
+    d.frames(4);
+    // the Style row's dropdown is registered in the panel
+    d.rect("graphics.prop.textStyle");
+    // create a style (what the dropdown's "Create Style…" entry runs)
+    let item = d.exec("textStyle.create", json!({"clip": a, "name": "Headline"}))["item"].as_u64().unwrap();
+    d.frames(2);
+    let layer = |d: &mut Driver, clip: u64| d.exec("graphics.list", json!({"clip": clip}))["layers"][0].clone();
+    assert_eq!(layer(&mut d, a)["style"], json!(item), "the layer is linked to the new style");
+
+    // apply the style to a second text layer: it takes the look and the link
+    let b = d.exec("graphics.newText", json!({"text": "B", "size": 40}))["clip"].as_u64().unwrap();
+    d.exec("textStyle.apply", json!({"style": item, "clips": [b]}));
+    let bl = layer(&mut d, b);
+    assert_eq!(bl["style"], json!(item));
+    assert_eq!(bl["text"], "B", "the content is its own");
+
+    // unlink from the panel: the link goes, the style asset stays
+    d.exec("graphics.selectLayer", json!({"clip": a, "layers": [0]}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "graphics.prop.textStyle.unlink"}));
+    d.frames(3);
+    assert!(layer(&mut d, a)["style"].is_null(), "the unlinked layer follows no style");
+    assert!(d.exec("textStyle.apply", json!({"style": item, "clips": [b]})).is_object(), "the style asset still exists");
 }
 
 /// Character ranges use setCharStyle, but must share the same one-gesture undo rule as a layer.

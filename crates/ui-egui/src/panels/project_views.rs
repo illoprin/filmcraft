@@ -278,7 +278,12 @@ pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: 
         }
     }
     if drag && resp.drag_started_by(egui::PointerButton::Primary) {
-        crate::panels::start_drag_item(ui, id);
+        // a text style is applied by dropping it on a graphic clip, not placed on the timeline
+        if matches!(kind, ItemKind::TextStyle(_)) {
+            crate::panels::start_drag_text_style(ui, id);
+        } else {
+            crate::panels::start_drag_item(ui, id);
+        }
     }
     if menu {
         resp.context_menu(|ui| item_menu(app, ui, id, kind, actions));
@@ -290,6 +295,29 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
     if ui.button(tl!("Rename")).clicked() {
         actions.push(("projectPanel.rename".into(), json!({"item": id.0})));
         ui.close();
+    }
+    if matches!(kind, ItemKind::TextStyle(_)) {
+        let name = app.session.project.item(id).map(|i| i.name.clone()).unwrap_or_default();
+        let b = ui.button(tl!("Apply to Selected Clips"));
+        app.auto.add("project.itemMenu.textStyle.apply", b.rect, "Apply to Selected Clips");
+        if b.clicked() {
+            actions.push(("textStyle.apply".into(), json!({"style": id.0})));
+            ui.close();
+        }
+        let b = ui.button(tl!("Export Text Style…"));
+        app.auto.add("project.itemMenu.textStyle.export", b.rect, "Export Text Style…");
+        if b.clicked() {
+            let file = format!("{name}.fstyle");
+            app.pick_ui(crate::native_dialogs::FileDialog::save_as(tl!("Text Style"), &["fstyle"], &file), move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return };
+                if let Err(e) = app.session.execute("textStyle.export", json!({"style": id.0, "path": path})) {
+                    app.ui.status = e.to_string();
+                }
+            });
+            ui.close();
+        }
+        ui.label(egui::RichText::new(tl!("Drag onto a graphic clip to apply")).color(app.tokens.text_faint).size(10.5));
+        ui.separator();
     }
     if ui.button(tl!("Open in Source Monitor")).clicked() {
         actions.push(("source.open".into(), json!({"item": id.0})));

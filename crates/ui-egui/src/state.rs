@@ -630,6 +630,9 @@ pub struct UiState {
     /// Open Text Properties dialog (the wrench in the Properties panel's Text section).
     #[serde(default)]
     pub text_props_dialog: Option<TextPropsDialog>,
+    /// Open Create Text Style dialog (the Style section's dropdown).
+    #[serde(default)]
+    pub text_style_dialog: Option<TextStyleDialog>,
     /// Open Window ▸ Workspaces dialog.
     #[serde(default)]
     pub workspace_dialog: Option<WorkspaceDialog>,
@@ -1007,6 +1010,15 @@ pub struct TextPropsDialog {
     pub ligatures_was: bool,
 }
 
+/// Draft of the Create Text Style dialog: the text layer it captures and the name to save it
+/// under.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TextStyleDialog {
+    pub clip: u64,
+    pub layer: usize,
+    pub name: String,
+}
+
 /// The text layer being edited on the Program monitor: caret and selection anchor are byte
 /// offsets into the layer's text.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1093,6 +1105,7 @@ impl Default for UiState {
             sequence_settings: SequenceSettingsDraft::default(),
             transition_duration: TransitionDurationDraft::default(),
             gfx_edit: None,
+            text_style_dialog: None,
             pen_points: vec![],
             link_media: None,
             create_proxies: None,

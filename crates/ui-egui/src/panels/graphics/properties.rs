@@ -641,6 +641,78 @@ fn property_targets(app: &FilmcraftApp, clip: ClipId, it: &TrackItem, l: usize) 
     ids
 }
 
+/// Every text style asset in the project, `(item id, name)`, by name.
+fn text_styles(app: &FilmcraftApp) -> Vec<(u64, String)> {
+    let mut styles: Vec<(u64, String)> =
+        app.session.project.items.iter().filter(|(_, it)| matches!(it.kind, ItemKind::TextStyle(_))).map(|(id, it)| (id.0, it.name.clone())).collect();
+    styles.sort_by_key(|(_, name)| name.to_lowercase());
+    styles
+}
+
+/// The Text Style section: which style this text layer follows, a dropdown to link or create one,
+/// and Push / Unlink once the layer's look has drifted from its style.
+fn text_style_section(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, clip: ClipId, l: usize, e: &EffectInstance, mt: Tick) {
+    if e.effect != graphic::TEXT_LAYER {
+        return;
+    }
+    let t = app.tokens;
+    if !section(ui, app, "Text Style", &t) {
+        return;
+    }
+    let styles = text_styles(app);
+    let linked = e.layer.as_ref().and_then(|x| x.style);
+    let style_asset = linked.and_then(|id| match app.session.project.item(id).map(|i| &i.kind) {
+        Some(ItemKind::TextStyle(s)) => Some((**s).clone()),
+        _ => None,
+    });
+    let modified = style_asset.as_ref().is_some_and(|s| s.is_modified(e, mt));
+    // 0 = None, 1..=styles.len() = a style, styles.len()+1 = Create Style…
+    let cur = linked.and_then(|id| styles.iter().position(|(i, _)| *i == id.0)).map_or(0, |k| k + 1);
+    let create = styles.len() + 1;
+    let current = match linked.and_then(|id| app.session.project.item(id)) {
+        Some(it) if modified => format!("* {}", it.name),
+        Some(it) => it.name.clone(),
+        None => tl!("None").to_string(),
+    };
+    let (_, mut vui) = cx.row(ui, tl!("Style"));
+    let mut sel = cur;
+    let r = craft_ui::ComboBox::from_id_salt(("gfx-textstyle", clip.0, l)).selected_text(current).width(170.0).show_ui(&mut vui, |ui| {
+        ui.selectable_value(&mut sel, 0, tl!("None"));
+        for (k, (_, name)) in styles.iter().enumerate() {
+            ui.selectable_value(&mut sel, k + 1, name);
+        }
+        ui.separator();
+        ui.selectable_value(&mut sel, create, tl!("Create Style…"));
+    });
+    let response = crate::widgets::accessible_name(r.response, "Style");
+    cx.auto("textStyle", response.rect, "Style");
+    if sel != cur {
+        if sel == create {
+            let n = styles.len() + 1;
+            app.ui.text_style_dialog = Some(crate::state::TextStyleDialog { clip: clip.0, layer: l, name: format!("Text Style {n}") });
+        } else if sel == 0 {
+            cx.actions.push(("textStyle.unlink".into(), json!({"clip": clip.0, "layer": l})));
+        } else if let Some((id, _)) = styles.get(sel - 1) {
+            cx.actions.push(("textStyle.apply".into(), json!({"style": id, "clip": clip.0})));
+        }
+    }
+    if style_asset.is_some() {
+        let (_, mut vui) = cx.row(ui, "");
+        let push = letter_button(&mut vui, "", tl!("Update Style"), false, &t, Tokens::ui(12.0));
+        icons::paint(vui.painter(), Rect::from_center_size(push.rect.center(), vec2(14.0, 14.0)), Icon::Reset, t.text_dim);
+        cx.auto("textStyle.push", push.rect, "Update Style");
+        if push.on_hover_text(tl!("Update Style")).clicked() {
+            cx.actions.push(("textStyle.push".into(), json!({"clip": clip.0, "layer": l})));
+        }
+        vui.add_space(6.0);
+        let r = vui.button(tl!("Unlink Style"));
+        cx.auto("textStyle.unlink", r.rect, "Unlink Style");
+        if r.clicked() {
+            cx.actions.push(("textStyle.unlink".into(), json!({"clip": clip.0, "layer": l})));
+        }
+    }
+}
+
 pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected_graphic(app) else {
@@ -837,6 +909,8 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.check(&mut vui, "kerning", tl!("Kerning"));
             cx.check(&mut vui, "ligatures", tl!("Ligatures"));
         }
+        // ---- text style (a text layer's look as a reusable asset; a no-op for a shape)
+        text_style_section(app, ui, &mut cx, clip, l, e, mt);
         if e.effect == graphic::SHAPE_LAYER && section(ui, app, "Shape", &t) {
             let (_, mut vui) = cx.row(ui, tl!("Shape"));
             cx.choice(&mut vui, "shape", tl!("Shape"), graphic::SHAPE_OPTS, 120.0);
@@ -935,8 +1009,51 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 }
 
-/// Text Properties (the wrench in the Text section): Text Layer Type and Text Styling.
+/// The graphic dialogs: Text Properties and Create Text Style.
 pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    text_style_dialog(app, ctx);
+    text_props_dialog(app, ctx);
+}
+
+/// Create Text Style: name a new style asset captured from the current text layer.
+fn text_style_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(mut d) = app.ui.text_style_dialog.clone() else { return };
+    let mut elems: Vec<(String, Rect, &str)> = Vec::new();
+    let mut close = crate::widgets::escape_closes(ctx);
+    let mut ok = false;
+    egui::Window::new(tl!("Create Text Style")).id(egui::Id::unique("gfx-text-style")).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
+        ui.label(tl!("Style Name"));
+        let r = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(240.0));
+        if r.gained_focus() || ui.memory(|m| m.focused().is_none()) {
+            r.request_focus();
+        }
+        let submit = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        elems.push(("graphics.textStyle.name".into(), r.rect, "Style Name"));
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let r = ui.button(tl!("Cancel"));
+            elems.push(("graphics.textStyle.cancel".into(), r.rect, "Cancel"));
+            close |= r.clicked();
+            let r = ui.button(tl!("OK"));
+            elems.push(("graphics.textStyle.ok".into(), r.rect, "OK"));
+            ok |= r.clicked();
+        });
+        ok |= submit;
+    });
+    for (id, r, l) in elems {
+        app.auto.add(&id, r, l);
+    }
+    if ok {
+        let p = json!({"clip": d.clip, "layer": d.layer, "name": d.name});
+        if let Err(e) = app.session.execute("textStyle.create", p) {
+            app.ui.status = e.to_string();
+        }
+    }
+    app.ui.text_style_dialog = if ok || close { None } else { Some(d) };
+}
+
+/// Text Properties (the wrench in the Text section): Text Layer Type and Text Styling.
+fn text_props_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.text_props_dialog.clone() else { return };
     let mut elems: Vec<(String, Rect, &str)> = Vec::new();
     let mut close = crate::widgets::escape_closes(ctx);

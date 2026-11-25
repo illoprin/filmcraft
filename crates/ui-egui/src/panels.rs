@@ -188,6 +188,8 @@ enum DragPayload {
     Effect(String),
     /// A graphics template (id, name) from Essential Graphics ▸ Browse.
     Template(String, String),
+    /// A text style asset dragged from the Project panel onto graphic clips.
+    TextStyle(ItemId),
 }
 
 /// Single egui temp slot holding the active drag payload: a project item or bin, a source, an effect or a graphics template.
@@ -227,6 +229,15 @@ pub fn dragged_template(ui: &egui::Ui) -> Option<String> {
 }
 pub fn start_drag_effect(ui: &egui::Ui, id: &str) {
     ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Effect(id.to_string())))));
+}
+pub fn start_drag_text_style(ui: &egui::Ui, item: ItemId) {
+    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::TextStyle(item)))));
+}
+pub fn dragged_text_style(ui: &egui::Ui) -> Option<ItemId> {
+    match payload(ui) {
+        Some(DragPayload::TextStyle(i)) => Some(i),
+        _ => None,
+    }
 }
 /// Prefix of a dragged effect payload that names a Color Grading preset rather than an effect id.
 pub const LUMETRI_PRESET_PREFIX: &str = "lumetri:";
@@ -323,6 +334,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
                 format!("{name} · {mode} · {:.2} s", s.range.duration.seconds())
             }
             DragPayload::Template(_, name) => name.clone(),
+            DragPayload::TextStyle(i) => app.session.project.item(*i).map(|x| x.name.clone()).unwrap_or_default(),
             DragPayload::Effect(e) => match (e.strip_prefix("preset:"), e.strip_prefix(LUMETRI_PRESET_PREFIX)) {
                 (Some(name), _) => name.to_string(),
                 (_, Some(name)) => crate::i18n::t(name).to_string(),

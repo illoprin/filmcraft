@@ -43,6 +43,24 @@ impl FilmcraftApp {
             let _ = crate::menus::invoke(self, ctx, "file.open", json!({"path": project}));
             return;
         }
+        // A dropped text style file (`.fstyle`) becomes a style asset, not media
+        let (style_files, paths): (Vec<String>, Vec<String>) = paths.into_iter().partition(|p| p.to_ascii_lowercase().ends_with(".fstyle"));
+        if !style_files.is_empty() {
+            let bin = self.import_bin();
+            let mut imported = 0usize;
+            let mut error = None;
+            for p in &style_files {
+                match self.session.execute("textStyle.import", json!({"path": p, "bin": bin.0})) {
+                    Ok(_) => imported += 1,
+                    Err(e) => error = Some(e.to_string()),
+                }
+            }
+            match error {
+                Some(e) => self.ui.status = e,
+                None if paths.is_empty() => self.ui.status = tlf!("Imported {n} text style(s)", n = imported),
+                None => {}
+            }
+        }
         if paths.is_empty() {
             return;
         }
