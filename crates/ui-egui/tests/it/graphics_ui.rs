@@ -742,6 +742,29 @@ fn effect_controls_font_and_style_are_drop_downs_that_apply() {
     assert_eq!(text_param(&mut d, clip, "font_style"), Some(filmcraft_project::ParamValue::Text("Bold Italic".into())), "picking a style applies it");
 }
 
+/// The Essential Graphics Font picker has a search field that narrows the family list as a query is
+/// typed: the matching bundled family stays and the others are dropped.
+#[test]
+fn font_picker_searches_families() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    d.exec("graphics.newText", json!({"text": "Title"}));
+    d.frames(3);
+    let shown = |d: &mut Driver, family: &str| -> bool {
+        let want = format!("graphics.prop.font.option.{family}");
+        d.ok("ui.elements", json!({"prefix": "graphics.prop.font.option."})).as_array().unwrap().iter().any(|e| e["id"].as_str() == Some(want.as_str()))
+    };
+    d.ok("ui.click", json!({"id": "graphics.prop.font"}));
+    d.frames(4);
+    assert!(shown(&mut d, "Inter") && shown(&mut d, "JetBrains Mono"), "the whole family list is shown before searching");
+    d.ok("ui.click", json!({"id": "graphics.prop.font.search"}));
+    d.frames(2);
+    d.ok("ui.type", json!({"text": "JetBrains"}));
+    d.frames(3);
+    assert!(shown(&mut d, "JetBrains Mono"), "the matching family stays");
+    assert!(!shown(&mut d, "Inter"), "a family the query does not match is filtered out");
+}
+
 /// #4625: with several text clips selected, a text property changed in the Properties panel
 /// (Font Size, Font) is set on every selected text clip, not only the first one shown there. A
 /// clip on a locked track keeps its value, and one undo restores each clip's own size.

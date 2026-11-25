@@ -21,6 +21,72 @@ fn color32(c: [f32; 4]) -> Color32 {
     Color32::from_rgba_unmultiplied(q(c[0]), q(c[1]), q(c[2]), q(c[3]))
 }
 
+/// The family names from `fams` whose name contains `query` (trimmed, case-insensitive), all of
+/// them when the query is empty: what the Font picker's search field lists.
+fn font_matches<'a>(fams: &'a [(String, Vec<String>)], query: &str) -> Vec<&'a str> {
+    let q = query.trim().to_lowercase();
+    fams.iter().filter(|(f, _)| q.is_empty() || f.to_lowercase().contains(&q)).map(|(f, _)| f.as_str()).collect()
+}
+
+/// The Font drop-down with a search field at the top of its menu: `fams` filtered by the typed
+/// query, a click applying the family through `cx`. The search text lives in egui's data while the
+/// menu is open and is dropped when it closes; every visible family is registered for automation.
+/// Returns the drop-down's button response.
+fn font_picker(cx: &mut Ctx, ui: &mut egui::Ui, clip: ClipId, layer: usize, family: &str, fams: &[(String, Vec<String>)]) -> egui::Response {
+    let search_id = egui::Id::unique(("gfx-font-search", clip.0, layer));
+    let mut search_rect = None;
+    let r = craft_ui::ComboBox::from_id_salt(("gfx-font", clip.0, layer))
+        .selected_text(family)
+        .width(170.0)
+        .height(400.0)
+        // a click in the search field must not close the menu; picking a family calls `Ui::close`
+        // instead, and a click outside still closes it
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show_ui_with_header(
+            ui,
+            |ui| {
+                let mut q = ui.data_mut(|d| d.get_temp::<String>(search_id)).unwrap_or_default();
+                let resp = ui.add(egui::TextEdit::singleline(&mut q).hint_text(tl!("Search fonts")).desired_width(f32::INFINITY));
+                let resp = crate::widgets::accessible_name(resp, "Search fonts");
+                // typing starts as soon as the menu opens, without a click first
+                if resp.gained_focus() || ui.memory(|m| m.focused().is_none()) {
+                    resp.request_focus();
+                }
+                search_rect = Some(resp.rect);
+                if resp.changed() {
+                    ui.data_mut(|d| d.insert_temp(search_id, q.clone()));
+                }
+                q
+            },
+            |ui, q| {
+                let mut rows = Vec::new();
+                for f in font_matches(fams, &q) {
+                    let resp = ui.selectable_label(f == family, f);
+                    rows.push((f.to_string(), resp.rect));
+                    if resp.clicked() {
+                        cx.set("font", json!(f));
+                        ui.close();
+                    }
+                }
+                rows
+            },
+        );
+    let button_id = r.response.id;
+    if !craft_ui::ComboBox::is_open(ui.ctx(), button_id) {
+        ui.ctx().data_mut(|d| d.remove::<String>(search_id));
+    }
+    if let Some(rect) = search_rect {
+        cx.autos.push(("graphics.prop.font.search".into(), rect, "Search fonts".into()));
+    }
+    // the visible choices, so a screen reader (and the tests) see which families the search kept
+    if let Some(rows) = r.inner {
+        for (name, rect) in rows {
+            cx.autos.push((format!("graphics.prop.font.option.{name}"), rect, name));
+        }
+    }
+    r.response
+}
+
 /// The formatting knobs of an inline graphics number field.
 struct NumberField<'a> {
     id: &'a str,
@@ -679,14 +745,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             };
             let fams = filmcraft_text::picker_families();
             let (_, mut vui) = cx.row(ui, tl!("Font"));
-            let r = craft_ui::ComboBox::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(&mut vui, |ui| {
-                for (f, _) in &fams {
-                    if ui.selectable_label(*f == family, f).clicked() {
-                        cx.set("font", json!(f));
-                    }
-                }
-            });
-            let response = crate::widgets::accessible_name(r.response, "Font");
+            let response = crate::widgets::accessible_name(font_picker(&mut cx, &mut vui, clip, l, &family, &fams), "Font");
             cx.auto("font", response.rect, "Font");
             let styles: Vec<String> = fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(&family)).map(|(_, s)| s.clone()).unwrap_or_default();
             let (_, mut vui) = cx.row(ui, tl!("Font Style"));
@@ -925,6 +984,20 @@ mod tests {
     use filmcraft_project::graphic_design::{CharStyle, LayerExtra, apply_char_style};
 
     use super::*;
+
+    /// The Font picker's search keeps only the families whose name contains the query (trimmed,
+    /// case-insensitive), and lists every family for a blank query.
+    #[test]
+    fn font_search_filters_families_by_name() {
+        let fam = |n: &str| (n.to_string(), vec!["Regular".to_string()]);
+        let fams = vec![fam("Inter"), fam("JetBrains Mono"), fam("Noto Serif")];
+        assert_eq!(font_matches(&fams, ""), vec!["Inter", "JetBrains Mono", "Noto Serif"], "empty shows all");
+        assert_eq!(font_matches(&fams, "  "), vec!["Inter", "JetBrains Mono", "Noto Serif"], "blank shows all");
+        assert_eq!(font_matches(&fams, "jet"), vec!["JetBrains Mono"], "case-insensitive substring");
+        assert_eq!(font_matches(&fams, "NOTO"), vec!["Noto Serif"]);
+        assert_eq!(font_matches(&fams, " serif "), vec!["Noto Serif"], "the query is trimmed");
+        assert!(font_matches(&fams, "zzz").is_empty(), "no matches shows nothing");
+    }
 
     /// With text selected, the Properties controls show the selected characters' own style, not the
     /// layer's (which an edit with a selection leaves unchanged), so the Fill colour and the RGB
