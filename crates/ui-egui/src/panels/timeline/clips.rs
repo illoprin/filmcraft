@@ -10,9 +10,9 @@ use super::{
 /// name) is inset by a point already, so it lands exactly on this plate.
 const CLIP_CORNER: f32 = 4.0;
 const CLIP_GAP: f32 = 1.0;
-/// The plate's inset highlight: white, ~30 % transparent, drawn 1 px inside the rounded edge.
-/// White premultiplied by alpha 180 is `(180, 180, 180, 180)`.
-const CLIP_INSET_HIGHLIGHT: Color32 = Color32::from_rgba_premultiplied(180, 180, 180, 180);
+/// The plate's inset highlight: a soft grey 1 px edge inside the rounded corners, dimmer than the
+/// old white so it reads as a subtle inset rather than a bright outline.
+const CLIP_INSET_HIGHLIGHT: Color32 = Color32::from_rgb(0x70, 0x70, 0x70);
 
 /// The rect a clip is painted on: its `body` inset by the outer gap. A clip smaller than the gap
 /// keeps its box, so the plate never inverts.
