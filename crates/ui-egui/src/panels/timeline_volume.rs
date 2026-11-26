@@ -24,6 +24,16 @@ use crate::theme::Tokens;
 
 const KEY_COL: Color32 = Color32::from_rgb(0xc8, 0xc8, 0xc8);
 
+/// The shortest track row that shows a clip's Volume line: a compact track (as Premiere hides it)
+/// leaves no room to read or grab the line, so only tracks taller than this draw it. A clip body is
+/// drawn a point in from the top and bottom of its row, so the row is 2 points taller than `body`.
+pub const MIN_LINE_TRACK_H: f32 = 50.0;
+
+/// Whether a clip drawn at `body` is on a track tall enough for the Volume line.
+fn has_room(body: Rect) -> bool {
+    body.height() + 2.0 > MIN_LINE_TRACK_H
+}
+
 /// Where the line goes in a clip drawn at `body`: under the name, down to the bottom edge.
 fn band(body: Rect) -> Rect {
     Rect::from_min_max(pos2(body.min.x, body.min.y + 17.0), pos2(body.max.x, body.max.y - 3.0))
@@ -94,7 +104,7 @@ fn keys(it: &TrackItem, body: Rect) -> Vec<(Tick, Pos2)> {
 /// sub-range of the clip the line may cover — a one-sided fade hides the line inside itself.
 pub fn paint(p: &egui::Painter, body: Rect, it: &TrackItem, edit: (Tick, Tick)) {
     let vis = p.clip_rect().intersect(body);
-    if band(body).height() < 6.0 || vis.width() <= 0.0 {
+    if !has_room(body) || vis.width() <= 0.0 {
         return;
     }
     let (e0, e1) = (x_of(it, body, edit.0).max(vis.min.x), x_of(it, body, edit.1).min(vis.max.x));
@@ -145,7 +155,7 @@ pub fn on_line(seq: &Sequence, layout: &Layout, clip: ClipId, pos: Pos2) -> bool
         return false;
     }
     let body = body(layout, r, it);
-    if band(body).height() < 6.0 {
+    if !has_room(body) {
         return false;
     }
     // inside a one-sided fade the line is hidden and its level cannot change
@@ -257,7 +267,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
         for it in &tr.items {
             let body = body(layout, r, it);
             let vis = body.intersect(row);
-            if vis.width() <= 0.0 || band(body).height() < 6.0 {
+            if vis.width() <= 0.0 || !has_room(body) {
                 continue;
             }
             // no Volume line inside a one-sided fade: the fade owns that stretch
