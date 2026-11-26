@@ -632,6 +632,7 @@ fn draw_clips(
             continue;
         }
         let p = painter.with_clip_rect(Rect::from_min_max(pos2(content.min.x, row.min.y), pos2(content.max.x, row.max.y)));
+        let bg = if r.index % 2 == 0 { t.tl_track_bg } else { t.tl_track_bg_alt };
         let volume_line = r.kind == TrackKind::Audio && !r.lane;
         // the selected gap (#648, #668): a light block across the empty time, as in Premiere Pro
         if let Some(g) = app.session.state.gap_selection.filter(|g| g.track == r.track) {
@@ -655,7 +656,8 @@ fn draw_clips(
             let x0 = layout.x_of(start);
             let x1 = layout.x_of(start + dur);
             let body = Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1.max(x0 + 1.0), r.rect.max.y - 1.0));
-            draw_clip(app, ctx, &p, body, it, r.kind, selection.contains(&it.id), &t, rate);
+            let plate = clips::clip_plate(body);
+            draw_clip(app, ctx, &p, body, it, r.kind, selection.contains(&it.id), &t, rate, bg);
             if volume_line {
                 super::timeline_volume::paint(&p, body, it, super::timeline_fade::volume_range(seq, tr.id, it.id));
             }
@@ -663,20 +665,22 @@ fn draw_clips(
             // in the color of the clip's master clip
             if let Some(d) = duplicates.get(&it.id) {
                 let col = DUPLICATE_FRAME_COLORS.get(d.color).or(DUPLICATE_FRAME_COLORS.last()).copied().unwrap_or(Color32::WHITE);
-                // kept inside the clip while a trim drag shortens it
-                let inside = p.with_clip_rect(body.intersect(p.clip_rect()));
-                paint_duplicate_stripes(app, &inside, layout, &d.ranges, start - it.start, (body.max.y - 3.0, body.max.y), visible, col, it.id);
+                // kept inside the clip (and its rounded plate) while a trim drag shortens it
+                let inside = p.with_clip_rect(plate.intersect(p.clip_rect()));
+                paint_duplicate_stripes(app, &inside, layout, &d.ranges, start - it.start, (plate.max.y - 3.0, plate.max.y), visible, col, it.id);
             }
             app.auto.add(&format!("timeline.clip.{}", it.id.0), body.intersect(content), &it.name);
             // a nest that runs past the end of its sequence's contents: that part is empty
             if !previews.contains_key(&it.id)
                 && let Some(empty) = app.session.project.nest_overhang(it)
             {
-                let er = Rect::from_min_max(pos2(layout.x_of(empty.start), body.min.y), pos2(layout.x_of(empty.end()), body.max.y)).intersect(body);
+                // draw inside the rounded plate, but the marked box keeps the clip's own edges
+                let er = Rect::from_min_max(pos2(layout.x_of(empty.start), plate.min.y), pos2(layout.x_of(empty.end()), plate.max.y)).intersect(plate);
+                let marked = Rect::from_min_max(pos2(layout.x_of(empty.start), body.min.y), pos2(layout.x_of(empty.end()), body.max.y)).intersect(body);
                 if er.width() > 0.0 {
                     p.with_clip_rect(er.intersect(p.clip_rect())).rect_filled(er, 0.0, Color32::from_black_alpha(110));
                     paint_hatch(&p, er);
-                    app.auto.add(&format!("timeline.clip.{}.empty", it.id.0), er.intersect(content), "past the end of the nested sequence");
+                    app.auto.add(&format!("timeline.clip.{}.empty", it.id.0), marked.intersect(content), "past the end of the nested sequence");
                 }
             }
         }
@@ -687,7 +691,7 @@ fn draw_clips(
                 && let Some((_, it)) = seq.find_item(*cid)
             {
                 let body = Rect::from_min_max(pos2(layout.x_of(*start), r.rect.min.y + 1.0), pos2(layout.x_of(*start + *dur), r.rect.max.y - 1.0));
-                draw_clip(app, ctx, &p, body, it, r.kind, true, &t, rate);
+                draw_clip(app, ctx, &p, body, it, r.kind, true, &t, rate, bg);
                 if volume_line {
                     super::timeline_volume::paint(&p, body, it, super::timeline_fade::volume_range(seq, tr.id, it.id));
                 }
@@ -699,7 +703,7 @@ fn draw_clips(
                 && mt.unwrap_or(home) == r.track
             {
                 let body = Rect::from_min_max(pos2(layout.x_of(*start), r.rect.min.y + 1.0), pos2(layout.x_of(*start + *dur), r.rect.max.y - 1.0));
-                draw_clip(app, ctx, &p, body, it, r.kind, true, &t, rate);
+                draw_clip(app, ctx, &p, body, it, r.kind, true, &t, rate, bg);
                 app.auto.add(&format!("timeline.clip.{}.copy", cid.0), body.intersect(content), &it.name);
             }
         }

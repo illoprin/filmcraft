@@ -5,6 +5,24 @@ use super::{
     TimeRange, Tokens, TrackItem, TrackKind, duplicate_frames, label_color, pos2, vec2,
 };
 
+/// The flat, macOS-like clip plate: 4 px rounded corners, a light inset edge, and a 1 px gap from
+/// the clip's box so the timeline colour shows around it. A clip's content (thumbnails, waveform,
+/// name) is inset by a point already, so it lands exactly on this plate.
+const CLIP_CORNER: f32 = 4.0;
+const CLIP_GAP: f32 = 1.0;
+/// The plate's inset highlight: white, ~30 % transparent, drawn 1 px inside the rounded edge.
+/// White premultiplied by alpha 180 is `(180, 180, 180, 180)`.
+const CLIP_INSET_HIGHLIGHT: Color32 = Color32::from_rgba_premultiplied(180, 180, 180, 180);
+
+/// The rect a clip is painted on: its `body` inset by the outer gap. A clip smaller than the gap
+/// keeps its box, so the plate never inverts.
+pub(super) fn clip_plate(body: Rect) -> Rect {
+    if body.width() <= 2.0 * CLIP_GAP || body.height() <= 2.0 * CLIP_GAP {
+        return body;
+    }
+    body.shrink(CLIP_GAP)
+}
+
 /// (session revision, sequence, project address)
 pub(super) type DuplicatesKey = (u64, ItemId, usize);
 
@@ -190,6 +208,9 @@ pub(super) fn draw_clip(
     selected: bool,
     t: &Tokens,
     rate: FrameRate,
+    // The track colour showing in the clip's outer gap, used to round the plate's corners over
+    // the content at the end of the clip.
+    bg: Color32,
 ) {
     let base = it.custom_label_color.map_or_else(
         || label_color(app, it.label),
@@ -209,9 +230,9 @@ pub(super) fn draw_clip(
     } else {
         base
     };
-    p.rect_filled(body, 0.0, fill);
-    // 1 pt lighter top edge
-    p.line_segment([pos2(body.min.x, body.min.y + 0.5), pos2(body.max.x, body.min.y + 0.5)], Stroke::new(1.0, lighten(fill, 0.15)));
+    let plate = clip_plate(body);
+    // The clip plate: rounded corners with a 1 px gap, so the timeline colour shows around it.
+    p.rect_filled(plate, CLIP_CORNER, fill);
     let name_h = 16.0;
     let w = body.width();
     // video thumbnails, aspect-correct, below the name band: the head frame, head and tail, or
@@ -292,6 +313,23 @@ pub(super) fn draw_clip(
             col,
         );
     }
+    // Round the plate's corners over the clip's content: thumbnails and the waveform run to the
+    // plate's edges, so fill each corner square with the track colour and draw the plate's rounded
+    // corner back on top to clip them to the shape.
+    for sq in [
+        Rect::from_min_size(plate.min, vec2(CLIP_CORNER, CLIP_CORNER)),
+        Rect::from_min_size(pos2(plate.max.x - CLIP_CORNER, plate.min.y), vec2(CLIP_CORNER, CLIP_CORNER)),
+        Rect::from_min_size(pos2(plate.min.x, plate.max.y - CLIP_CORNER), vec2(CLIP_CORNER, CLIP_CORNER)),
+        Rect::from_min_size(plate.max - vec2(CLIP_CORNER, CLIP_CORNER), vec2(CLIP_CORNER, CLIP_CORNER)),
+    ] {
+        p.rect_filled(sq, 0.0, bg);
+        p.with_clip_rect(sq).rect_filled(plate, CLIP_CORNER, fill);
+    }
+    // audio fade handles at the top corners (drag to fade in or out; see timeline_fade), over the
+    // rounded plate so the masks above do not eat into them
+    if kind == TrackKind::Audio && it.enabled {
+        crate::panels::timeline_fade::paint(app, p, body, it, t);
+    }
     // corner triangles where the clip reaches the media's first/last frame (no handles)
     let media_dur = app.session.project.item(it.item).map(|i| i.duration());
     let no_head = it.source_in <= Tick::ZERO;
@@ -299,24 +337,20 @@ pub(super) fn draw_clip(
     let tri = 5.0;
     if no_head && w > 12.0 {
         clip_p.add(egui::Shape::convex_polygon(
-            vec![body.min, body.min + vec2(tri, 0.0), body.min + vec2(0.0, tri)],
+            vec![plate.min, plate.min + vec2(tri, 0.0), plate.min + vec2(0.0, tri)],
             Color32::from_white_alpha(220),
             Stroke::NONE,
         ));
     }
     if no_tail && w > 12.0 {
-        let tr = pos2(body.max.x, body.min.y);
+        let tr = pos2(plate.max.x, plate.min.y);
         clip_p.add(egui::Shape::convex_polygon(vec![tr, tr + vec2(0.0, tri), tr - vec2(tri, 0.0)], Color32::from_white_alpha(220), Stroke::NONE));
     }
-    // audio fade handles at the top corners (drag to fade in or out; see timeline_fade)
-    if kind == TrackKind::Audio && it.enabled {
-        crate::panels::timeline_fade::paint(app, p, body, it, t);
-    }
-    // 1 pt black separator at the clip's left edge
-    p.line_segment([pos2(body.min.x + 0.5, body.min.y), pos2(body.min.x + 0.5, body.max.y)], Stroke::new(1.0, Color32::BLACK));
+    // the plate's 1 px light inset edge
+    p.rect_stroke(plate, CLIP_CORNER, Stroke::new(1.0, CLIP_INSET_HIGHLIGHT), StrokeKind::Inside);
     if selected {
-        p.rect_stroke(body.shrink(1.0), 0.0, Stroke::new(1.0, Color32::BLACK), StrokeKind::Inside);
-        p.rect_stroke(body, 0.0, Stroke::new(2.0, t.clip_selected_border), StrokeKind::Inside);
+        p.rect_stroke(plate.shrink(1.0), CLIP_CORNER, Stroke::new(1.0, Color32::BLACK), StrokeKind::Inside);
+        p.rect_stroke(plate, CLIP_CORNER, Stroke::new(2.0, t.clip_selected_border), StrokeKind::Inside);
     }
 }
 
