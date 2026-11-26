@@ -710,7 +710,7 @@ fn text_style_section(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, c
         let push = letter_button(&mut vui, "", tl!("Update Style"), false, &t, Tokens::ui(12.0));
         icons::paint(vui.painter(), Rect::from_center_size(push.rect.center(), vec2(14.0, 14.0)), Icon::Reset, t.text_dim);
         cx.auto("textStyle.push", push.rect, "Update Style");
-        if push.on_hover_text(tl!("Update Style")).clicked() {
+        if push.clicked() {
             cx.actions.push(("textStyle.push".into(), json!({"clip": clip.0, "layer": l})));
         }
         vui.add_space(6.0);
